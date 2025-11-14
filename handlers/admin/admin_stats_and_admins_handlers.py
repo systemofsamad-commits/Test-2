@@ -4,14 +4,14 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
 
 from states.admin_states import AdminStates
-from database import Database
+from helpers import get_db
 from helpers import is_admin
 from config import Config
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin_stats_and_admins_handlers")
 config = Config()
-db = Database(config.DB_NAME)
+db = get_db()
 
 
 # ============ СТАТИСТИКА ============

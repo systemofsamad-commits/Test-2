@@ -4,14 +4,14 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 
 from states.admin_states import AdminStates
-from database import Database
 from helpers import is_admin
+from helpers import get_db
 from config import Config
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin_management_handlers")
 config = Config()
-db = Database(config.DB_NAME)
+db = get_db()
 
 
 # ============ УПРАВЛЕНИЕ ПРЕПОДАВАТЕЛЯМИ ============

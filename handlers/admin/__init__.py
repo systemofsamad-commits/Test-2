@@ -15,13 +15,13 @@ admin_router = Router(name="admin")
 
 # Включаем все под-роутеры в правильном порядке
 # ВАЖНО: Порядок имеет значение - более специфичные обработчики должны быть первыми
-admin_router.include_router(base_router)         # Базовые обработчики (меню)
-admin_router.include_router(status_router)       # Смена статусов
-admin_router.include_router(student_router)      # Управление студентами
-admin_router.include_router(progress_router)     # Прогресс
-admin_router.include_router(lesson_router)       # Уроки
-admin_router.include_router(management_router)   # Управление (учителя, курсы, группы)
-admin_router.include_router(broadcast_router)    # Рассылка
+admin_router.include_router(base_router)  # Базовые обработчики (меню)
+admin_router.include_router(status_router)  # Смена статусов
+admin_router.include_router(student_router)  # Управление студентами
+admin_router.include_router(progress_router)  # Прогресс
+admin_router.include_router(lesson_router)  # Уроки
+admin_router.include_router(management_router)  # Управление (учителя, курсы, группы)
+admin_router.include_router(broadcast_router)  # Рассылка
 admin_router.include_router(stats_admins_router)
 
 __all__ = ["admin_router"]

@@ -13,7 +13,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from config import Config
 from keyboards.user_kb import get_main_keyboard
 from keyboards.admin_kb import get_admin_main_keyboard
-from helpers import is_admin
+from helpers import is_admin, get_db
 
 # Настройка логирования
 logging.basicConfig(
@@ -30,16 +30,21 @@ async def main():
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
 
-    # Инициализация базы данных
+    # ✅ ИНИЦИАЛИЗАЦИЯ БД (упрощенная версия)
     try:
-        from database_fixes import initialize_database
-        if not initialize_database():
-            logger.error("❌ Failed to initialize database")
-            return
-        logger.info("✅ Database initialized successfully")
+        # Получаем экземпляр БД (это автоматически инициализирует схему)
+        db = get_db()
+
+        # Проверяем структуру
+        if db.check_database_structure():
+            logger.info("✅ Database initialized successfully")
+        else:
+            logger.warning("⚠️ Database structure check failed")
+
     except Exception as e:
-        logger.error(f"❌ Error initializing database: {e}")
-        return
+        logger.error(f"❌ Error initializing database: {e}", exc_info=True)
+        # Не прерываем запуск - БД может быть уже инициализирована
+        logger.info("Continuing with existing database...")
 
     # ✅ КОМАНДА /start
     @dp.message(Command("start"))

@@ -5,14 +5,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from config import Config
-from database import Database
-from helpers import is_admin
+from helpers import is_admin, get_db  # ✅ ИЗМЕНЕНО: добавлен get_db
 from states.admin_states import AdminStates
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin_student_handlers")
 config = Config()
-db = Database(config.DB_NAME)
 
 
 # ============ ПРОСМОТР СТУДЕНТОВ ПО СТАТУСАМ ============
@@ -26,6 +24,7 @@ async def view_students_by_status(callback: CallbackQuery):
 
     status = callback.data.replace("view_students_", "")
 
+    # ✅ ИЗМЕНЕНО: Упрощенный маппинг статусов
     status_map = {
         'active': 'active',
         'trial': 'trial',
@@ -36,7 +35,10 @@ async def view_students_by_status(callback: CallbackQuery):
     }
 
     db_status = status_map.get(status, status)
-    students = db.get_students_by_status(db_status)
+
+    # ✅ ИЗМЕНЕНО: Используем новый репозиторий
+    db = get_db()
+    registrations = db.registrations.get_by_status(db_status)
 
     status_names = {
         'active': '🟢 Активные',
@@ -49,7 +51,7 @@ async def view_students_by_status(callback: CallbackQuery):
 
     status_name = status_names.get(db_status, db_status)
 
-    if not students:
+    if not registrations:
         from keyboards.admin_kb import get_admin_students_menu
         await callback.message.edit_text(
             f"{status_name}\n\n"
@@ -60,31 +62,25 @@ async def view_students_by_status(callback: CallbackQuery):
         return
 
     # Показываем первого студента
-    student = students[0]
-    status_text = config.STATUSES.get(student.status, student.status)
+    reg = registrations[0]
+    status_text = config.STATUSES.get(reg['status_code'], reg['status_code'])
 
     info_text = (
         f"📋 *Студенты: {status_name}*\n"
-        f"Всего: {len(students)}\n\n"
-        f"👤 *Студент 1/{len(students)}*\n\n"
-        f"📛 Имя: {student.name}\n"
-        f"📞 Телефон: {student.phone}\n"
-        f"🎯 Курс: {student.course}\n"
+        f"Всего: {len(registrations)}\n\n"
+        f"👤 *Студент 1/{len(registrations)}*\n\n"
+        f"📛 Имя: {reg['name']}\n"
+        f"📞 Телефон: {reg['phone']}\n"
+        f"🎯 Курс: {reg['course_name']}\n"
         f"📊 Статус: {status_text}\n"
-        f"🎓 Тип обучения: {student.training_type}\n"
-        f"⏰ Расписание: {student.schedule}\n"
-        f"💰 Цена: {student.price}\n"
-        f"🆔 ID: {student.id}\n"
+        f"🆔 ID: {reg['id']}\n"
     )
-
-    if hasattr(student, 'progress') and student.progress:
-        info_text += f"📊 Прогресс: {student.progress}\n"
 
     from keyboards.admin_kb import get_student_actions_keyboard
     await callback.message.edit_text(
         info_text,
         parse_mode="Markdown",
-        reply_markup=get_student_actions_keyboard(student.id, student.status, student.name)
+        reply_markup=get_student_actions_keyboard(reg['id'], reg['status_code'])
     )
     await callback.answer()
 
@@ -122,9 +118,12 @@ async def find_student_by_id_process(message: Message, state: FSMContext):
 
     try:
         student_id = int(message.text)
-        student = db.get_student_by_id(student_id)
 
-        if not student:
+        # ✅ ИЗМЕНЕНО: Используем новый репозиторий
+        db = get_db()
+        reg = db.registrations.get_by_id(student_id)
+
+        if not reg:
             from keyboards.admin_kb import get_cancel_keyboard
             await message.answer(
                 f"❌ Студент с ID {student_id} не найден\n\n"
@@ -133,24 +132,21 @@ async def find_student_by_id_process(message: Message, state: FSMContext):
             )
             return
 
-        status_text = config.STATUSES.get(student.status, student.status)
+        status_text = config.STATUSES.get(reg['status_code'], reg['status_code'])
         info_text = (
             f"✅ *Студент найден!*\n\n"
-            f"👤 Имя: {student.name}\n"
-            f"📞 Телефон: {student.phone}\n"
-            f"🎯 Курс: {student.course}\n"
+            f"👤 Имя: {reg['name']}\n"
+            f"📞 Телефон: {reg['phone']}\n"
+            f"🎯 Курс: {reg['course_name']}\n"
             f"📊 Статус: {status_text}\n"
-            f"🎓 Тип обучения: {student.training_type}\n"
-            f"⏰ Расписание: {student.schedule}\n"
-            f"💰 Цена: {student.price}\n"
-            f"🆔 ID: {student.id}\n"
+            f"🆔 ID: {reg['id']}\n"
         )
 
         from keyboards.admin_kb import get_student_actions_keyboard
         await message.answer(
             info_text,
             parse_mode="Markdown",
-            reply_markup=get_student_actions_keyboard(student.id, student.status, student.name)
+            reply_markup=get_student_actions_keyboard(reg['id'], reg['status_code'])
         )
         await state.clear()
 
@@ -192,10 +188,19 @@ async def find_student_by_phone_process(message: Message, state: FSMContext):
         return
 
     phone = message.text.strip()
-    students = db.get_all_registrations()
-    found_students = [s for s in students if s.phone == phone]
 
-    if not found_students:
+    # ✅ ИЗМЕНЕНО: Поиск через БД с фильтром
+    db = get_db()
+    query = """
+            SELECT r.*, u.full_name as name, u.phone, c.name as course_name
+            FROM registrations r
+                     JOIN users u ON r.user_id = u.id
+                     JOIN courses c ON r.course_id = c.id
+            WHERE u.phone LIKE ? \
+            """
+    registrations = db.execute_query(query, (f'%{phone}%',))
+
+    if not registrations:
         from keyboards.admin_kb import get_cancel_keyboard
         await message.answer(
             f"❌ Студент с телефоном {phone} не найден\n\n"
@@ -204,26 +209,23 @@ async def find_student_by_phone_process(message: Message, state: FSMContext):
         )
         return
 
-    student = found_students[0]
-    status_text = config.STATUSES.get(student.status, student.status)
+    reg = registrations[0]
+    status_text = config.STATUSES.get(reg['status_code'], reg['status_code'])
 
     info_text = (
         f"✅ *Студент найден!*\n\n"
-        f"👤 Имя: {student.name}\n"
-        f"📞 Телефон: {student.phone}\n"
-        f"🎯 Курс: {student.course}\n"
+        f"👤 Имя: {reg['name']}\n"
+        f"📞 Телефон: {reg['phone']}\n"
+        f"🎯 Курс: {reg['course_name']}\n"
         f"📊 Статус: {status_text}\n"
-        f"🎓 Тип обучения: {student.training_type}\n"
-        f"⏰ Расписание: {student.schedule}\n"
-        f"💰 Цена: {student.price}\n"
-        f"🆔 ID: {student.id}\n"
+        f"🆔 ID: {reg['id']}\n"
     )
 
     from keyboards.admin_kb import get_student_actions_keyboard
     await message.answer(
         info_text,
         parse_mode="Markdown",
-        reply_markup=get_student_actions_keyboard(student.id, student.status, student.name)
+        reply_markup=get_student_actions_keyboard(reg['id'], reg['status_code'])
     )
     await state.clear()
 
@@ -239,21 +241,24 @@ async def schedule_trial_start(callback: CallbackQuery, state: FSMContext):
 
     try:
         reg_id = int(callback.data.replace("schedule_trial_", ""))
-        student = db.get_student_by_id(reg_id)
 
-        if not student:
+        # ✅ ИЗМЕНЕНО: Используем новый репозиторий
+        db = get_db()
+        reg = db.registrations.get_by_id(reg_id)
+
+        if not reg:
             await callback.answer("❌ Студент не найден")
             return
 
         await state.set_state(AdminStates.waiting_for_trial_time)
-        await state.update_data(reg_id=reg_id, student_name=student.name)
+        await state.update_data(reg_id=reg_id, student_name=reg['name'])
 
         from keyboards.admin_kb import get_cancel_keyboard
         await callback.message.edit_text(
             f"🎓 *Назначение пробного урока*\n\n"
-            f"👤 Студент: *{student.name}*\n"
-            f"📞 Телефон: {student.phone}\n"
-            f"📚 Курс: {student.course}\n\n"
+            f"👤 Студент: *{reg['name']}*\n"
+            f"📞 Телефон: {reg['phone']}\n"
+            f"📚 Курс: {reg['course_name']}\n\n"
             f"⏰ Введите дату и время пробного урока\n"
             f"Формат: `2024-12-31 14:30:00`",
             parse_mode="Markdown",
@@ -300,10 +305,14 @@ async def set_trial_time(message: Message, state: FSMContext):
     data = await state.get_data()
     reg_id = data['reg_id']
 
-    # Устанавливаем время и меняем статус на 'trial'
-    success = db.set_trial_lesson_time(reg_id, message.text)
+    # ✅ ИЗМЕНЕНО: Используем новый репозиторий
+    db = get_db()
 
-    if success:
+    # Устанавливаем время и меняем статус на 'trial'
+    success_time = db.registrations.set_trial_lesson_time(reg_id, message.text)
+    success_status = db.registrations.update_status(reg_id, 'trial')
+
+    if success_time and success_status:
         from keyboards.admin_kb import get_admin_students_menu
         await message.answer(
             f"✅ *Пробный урок назначен!*\n\n"

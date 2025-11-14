@@ -4,14 +4,12 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
 
 from states.student_states import StudentStates
-from database import Database
-from helpers import is_admin
+from helpers import is_admin, get_db
 from config import Config
 
 logger = logging.getLogger(__name__)
-router = Router(name="admin_progress_handlers")
+router = Router(name="admin_progress_handlers")  # ✅ ИСПРАВЛЕНО: router вместо router_progress
 config = Config()
-db = Database(config.DB_NAME)
 
 
 # Обновление прогресса
@@ -22,19 +20,20 @@ async def handle_update_progress(callback: CallbackQuery, state: FSMContext):
         return
 
     registration_id = int(callback.data.split("_")[2])
-    student = db.get_student_by_id(registration_id)
 
-    if not student:
+    db = get_db()
+    reg = db.registrations.get_by_id(registration_id)
+
+    if not reg:
         await callback.answer("Студент не найден", show_alert=True)
         return
 
     await state.update_data(registration_id=registration_id)
 
-    # Показываем меню выбора прогресса
     from keyboards.admin_kb import get_progress_update_keyboard
     await callback.message.edit_text(
-        f"📊 Обновление прогресса для {student.name}\n"
-        f"Текущий прогресс: {student.progress or 'Не указан'}",
+        f"📊 Обновление прогресса для {reg['name']}\n"
+        f"Текущий прогресс: {reg.get('notes', 'Не указан')}",
         reply_markup=get_progress_update_keyboard(registration_id)
     )
     await callback.answer()
@@ -63,17 +62,18 @@ async def handle_progress_selection(callback: CallbackQuery, state: FSMContext):
         await state.set_state(StudentStates.waiting_custom_progress)
     else:
         progress_text = progress_map.get(progress_type, progress_type)
-        db.update_student_progress(registration_id, progress_text)
 
-        student = db.get_student_by_id(registration_id)
+        db = get_db()
+        db.registrations.add_note(registration_id, f"Прогресс: {progress_text}")
+
+        reg = db.registrations.get_by_id(registration_id)
         from keyboards.admin_kb import get_student_actions_keyboard
         await callback.message.edit_text(
             f"✅ Прогресс обновлен: {progress_text}\n"
-            f"Для студента: {student.name}",
+            f"Для студента: {reg['name']}",
             reply_markup=get_student_actions_keyboard(
                 registration_id,
-                student.status,
-                student.name
+                reg['status_code']
             )
         )
 
@@ -89,17 +89,17 @@ async def handle_custom_progress_input(message: Message, state: FSMContext):
     data = await state.get_data()
     registration_id = data.get('registration_id')
 
-    db.update_student_progress(registration_id, message.text)
+    db = get_db()
+    db.registrations.add_note(registration_id, f"Прогресс: {message.text}")
 
-    student = db.get_student_by_id(registration_id)
+    reg = db.registrations.get_by_id(registration_id)
     from keyboards.admin_kb import get_student_actions_keyboard
     await message.answer(
         f"✅ Прогресс обновлен: {message.text}\n"
-        f"Для студента: {student.name}",
+        f"Для студента: {reg['name']}",
         reply_markup=get_student_actions_keyboard(
             registration_id,
-            student.status,
-            student.name
+            reg['status_code']
         )
     )
     await state.clear()
@@ -112,19 +112,21 @@ async def handle_student_contacts(callback: CallbackQuery):
         return
 
     registration_id = int(callback.data.split("_")[2])
-    student = db.get_student_by_id(registration_id)
 
-    if not student:
+    db = get_db()
+    reg = db.registrations.get_by_id(registration_id)
+
+    if not reg:
         await callback.answer("Студент не найден", show_alert=True)
         return
 
     contacts_text = f"""
 📞 Контакты студента:
 
-👤 Имя: {student.name}
-📱 Телефон: {student.phone or 'Не указан'}
-📧 Email: {getattr(student, 'email', 'Не указан')}
-💬 Telegram: @{getattr(student, 'telegram', 'Не указан')}
+👤 Имя: {reg['name']}
+📱 Телефон: {reg.get('phone', 'Не указан')}
+📧 Email: {reg.get('email', 'Не указан')}
+💬 Telegram ID: {reg.get('telegram_id', 'Не указан')}
 
 ID: {registration_id}
     """
@@ -140,9 +142,11 @@ async def handle_full_info(callback: CallbackQuery):
         return
 
     registration_id = int(callback.data.split("_")[2])
-    student = db.get_student_by_id(registration_id)
 
-    if not student:
+    db = get_db()
+    reg = db.registrations.get_by_id(registration_id)
+
+    if not reg:
         await callback.answer("Студент не найден", show_alert=True)
         return
 
@@ -150,24 +154,22 @@ async def handle_full_info(callback: CallbackQuery):
 📋 Полная информация о студенте:
 
 👤 Основное:
-- Имя: {student.name}
+- Имя: {reg['name']}
 - ID: {registration_id}
-- Статус: {config.STATUSES.get(student.status, student.status)}
+- Статус: {config.STATUSES.get(reg['status_code'], reg['status_code'])}
 
 📞 Контакты:
-- Телефон: {student.phone or 'Не указан'}
-- Email: {getattr(student, 'email', 'Не указан')}
-- Telegram: @{getattr(student, 'telegram', 'Не указан')}
+- Телефон: {reg.get('phone', 'Не указан')}
+- Email: {reg.get('email', 'Не указан')}
+- Telegram ID: {reg.get('telegram_id', 'Не указан')}
 
 🎓 Обучение:
-- Курс: {student.course}
-- Группа: {getattr(student, 'group_name', 'Не назначена')}
-- Прогресс: {student.progress or 'Не указан'}
-- Преподаватель: {getattr(student, 'teacher_name', 'Не назначен')}
+- Курс: {reg['course_name']}
+- Прогресс: {reg.get('notes', 'Не указан')}
 
 📅 Даты:
-- Зарегистрирован: {getattr(student, 'registration_date', 'Не указана')}
-- Последнее обновление: {getattr(student, 'last_update', 'Не указано')}
+- Зарегистрирован: {reg.get('created_at', 'Не указана')}
+- Последнее обновление: {reg.get('updated_at', 'Не указано')}
     """
 
     await callback.message.answer(full_info)
