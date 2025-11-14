@@ -7,8 +7,8 @@ import sqlite3
 import logging
 from contextlib import contextmanager
 from typing import List, Dict, Any
-
-from handlers.user_handlers import db
+# ✅ ИСПРАВЛЕНО: Удален импорт из handlers.user_handlers, который создавал циклический импорт
+# from handlers.user_handlers import db  # ❌ УДАЛЕНО
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +220,10 @@ class Database:
                                TIMESTAMP
                                DEFAULT
                                    CURRENT_TIMESTAMP,
+                           updated_at
+                               TIMESTAMP
+                               DEFAULT
+                                   CURRENT_TIMESTAMP,
                            is_active
                                BOOLEAN
                                DEFAULT
@@ -227,63 +231,56 @@ class Database:
                        )
                        """)
 
-        # Типы обучения
+        # Преподаватели
         cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS training_types
+                       CREATE TABLE IF NOT EXISTS teachers
                        (
                            id
                                INTEGER
                                PRIMARY
                                    KEY
                                AUTOINCREMENT,
-                           name
-                               TEXT
-                               UNIQUE
-                               NOT
-                                   NULL,
-                           description
-                               TEXT,
-                           is_active
-                               BOOLEAN
-                               DEFAULT
-                                   1,
-                           created_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP
-                       )
-                       """)
-
-        # Расписания
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS schedules
-                       (
-                           id
+                           user_id
                                INTEGER
-                               PRIMARY
-                                   KEY
-                               AUTOINCREMENT,
-                           name
-                               TEXT
                                UNIQUE
                                NOT
                                    NULL,
-                           time_start
+                           full_name
+                               TEXT
+                               NOT
+                                   NULL,
+                           phone
                                TEXT,
-                           time_end
+                           email
                                TEXT,
+                           specialization
+                               TEXT,
+                           experience_years
+                               INTEGER,
+                           created_at
+                               TIMESTAMP
+                               DEFAULT
+                                   CURRENT_TIMESTAMP,
+                           updated_at
+                               TIMESTAMP
+                               DEFAULT
+                                   CURRENT_TIMESTAMP,
                            is_active
                                BOOLEAN
                                DEFAULT
                                    1,
-                           created_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP
+                           FOREIGN
+                               KEY
+                               (
+                                user_id
+                                   ) REFERENCES users
+                               (
+                                id
+                                   )
                        )
                        """)
 
-        # Статусы студентов
+        # Статусы студентов (справочник)
         cursor.execute("""
                        CREATE TABLE IF NOT EXISTS student_statuses
                        (
@@ -302,15 +299,50 @@ class Database:
                                NOT
                                    NULL,
                            description
-                               TEXT,
-                           created_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP
+                               TEXT
                        )
                        """)
 
-        # Регистрации (ЕДИНАЯ ТАБЛИЦА!)
+        # Типы обучения (справочник)
+        cursor.execute("""
+                       CREATE TABLE IF NOT EXISTS training_types
+                       (
+                           id
+                               INTEGER
+                               PRIMARY
+                                   KEY
+                               AUTOINCREMENT,
+                           name
+                               TEXT
+                               UNIQUE
+                               NOT
+                                   NULL,
+                           description
+                               TEXT
+                       )
+                       """)
+
+        # Расписания (справочник)
+        cursor.execute("""
+                       CREATE TABLE IF NOT EXISTS schedules
+                       (
+                           id
+                               INTEGER
+                               PRIMARY
+                                   KEY
+                               AUTOINCREMENT,
+                           name
+                               TEXT
+                               NOT
+                                   NULL,
+                           time_start
+                               TEXT,
+                           time_end
+                               TEXT
+                       )
+                       """)
+
+        # Регистрации
         cursor.execute("""
                        CREATE TABLE IF NOT EXISTS registrations
                        (
@@ -321,6 +353,14 @@ class Database:
                                AUTOINCREMENT,
                            user_id
                                INTEGER
+                               NOT
+                                   NULL,
+                           full_name
+                               TEXT
+                               NOT
+                                   NULL,
+                           phone
+                               TEXT
                                NOT
                                    NULL,
                            course_id
@@ -334,32 +374,11 @@ class Database:
                            status_code
                                TEXT
                                DEFAULT
-                                   'active',
+                                   'trial',
                            created_at
                                TIMESTAMP
                                DEFAULT
                                    CURRENT_TIMESTAMP,
-                           consultation_time
-                               TIMESTAMP
-                               NULL,
-                           trial_lesson_time
-                               TIMESTAMP
-                               NULL,
-                           enrollment_date
-                               TIMESTAMP
-                               NULL,
-                           notified
-                               BOOLEAN
-                               DEFAULT
-                                   0,
-                           reminder_sent
-                               BOOLEAN
-                               DEFAULT
-                                   0,
-                           source
-                               TEXT,
-                           notes
-                               TEXT,
                            updated_at
                                TIMESTAMP
                                DEFAULT
@@ -372,28 +391,32 @@ class Database:
                                (
                                 id
                                    ),
-                           FOREIGN KEY
+                           FOREIGN
+                               KEY
                                (
                                 course_id
                                    ) REFERENCES courses
                                (
                                 id
                                    ),
-                           FOREIGN KEY
+                           FOREIGN
+                               KEY
                                (
                                 training_type_id
                                    ) REFERENCES training_types
                                (
                                 id
                                    ),
-                           FOREIGN KEY
+                           FOREIGN
+                               KEY
                                (
                                 schedule_id
                                    ) REFERENCES schedules
                                (
                                 id
                                    ),
-                           FOREIGN KEY
+                           FOREIGN
+                               KEY
                                (
                                 status_code
                                    ) REFERENCES student_statuses
@@ -417,18 +440,41 @@ class Database:
                                UNIQUE
                                NOT
                                    NULL,
-                           student_code
+                           registration_id
+                               INTEGER,
+                           full_name
                                TEXT
-                               UNIQUE,
-                           enrollment_date
-                               DATE
-                               DEFAULT
-                                   CURRENT_DATE,
-                           graduation_date
-                               DATE,
-                           notes
+                               NOT
+                                   NULL,
+                           phone
+                               TEXT
+                               NOT
+                                   NULL,
+                           email
                                TEXT,
+                           course_id
+                               INTEGER,
+                           training_type_id
+                               INTEGER,
+                           schedule_id
+                               INTEGER,
+                           status_code
+                               TEXT
+                               DEFAULT
+                                   'studying',
+                           enrollment_date
+                               DATE,
+                           completion_date
+                               DATE,
+                           progress
+                               REAL
+                               DEFAULT
+                                   0,
                            created_at
+                               TIMESTAMP
+                               DEFAULT
+                                   CURRENT_TIMESTAMP,
+                           updated_at
                                TIMESTAMP
                                DEFAULT
                                    CURRENT_TIMESTAMP,
@@ -443,43 +489,47 @@ class Database:
                                    ) REFERENCES users
                                (
                                 id
+                                   ),
+                           FOREIGN
+                               KEY
+                               (
+                                registration_id
+                                   ) REFERENCES registrations
+                               (
+                                id
+                                   ),
+                           FOREIGN
+                               KEY
+                               (
+                                course_id
+                                   ) REFERENCES courses
+                               (
+                                id
+                                   ),
+                           FOREIGN
+                               KEY
+                               (
+                                training_type_id
+                                   ) REFERENCES training_types
+                               (
+                                id
+                                   ),
+                           FOREIGN
+                               KEY
+                               (
+                                schedule_id
+                                   ) REFERENCES schedules
+                               (
+                                id
+                                   ),
+                           FOREIGN
+                               KEY
+                               (
+                                status_code
+                                   ) REFERENCES student_statuses
+                               (
+                                code
                                    )
-                       )
-                       """)
-
-        # Преподаватели
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS teachers
-                       (
-                           id
-                               INTEGER
-                               PRIMARY
-                                   KEY
-                               AUTOINCREMENT,
-                           name
-                               TEXT
-                               NOT
-                                   NULL,
-                           phone
-                               TEXT
-                               NOT
-                                   NULL,
-                           email
-                               TEXT,
-                           specialization
-                               TEXT,
-                           experience
-                               TEXT,
-                           bio
-                               TEXT,
-                           created_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP,
-                           is_active
-                               BOOLEAN
-                               DEFAULT
-                                   1
                        )
                        """)
 
@@ -508,11 +558,7 @@ class Database:
                            max_students
                                INTEGER
                                DEFAULT
-                                   10,
-                           current_students
-                               INTEGER
-                               DEFAULT
-                                   0,
+                                   15,
                            start_date
                                DATE,
                            end_date
@@ -533,14 +579,16 @@ class Database:
                                (
                                 id
                                    ),
-                           FOREIGN KEY
+                           FOREIGN
+                               KEY
                                (
                                 teacher_id
                                    ) REFERENCES teachers
                                (
                                 id
                                    ),
-                           FOREIGN KEY
+                           FOREIGN
+                               KEY
                                (
                                 schedule_id
                                    ) REFERENCES schedules
@@ -550,7 +598,7 @@ class Database:
                        )
                        """)
 
-        # Связь студент-группа (many-to-many)
+        # Связь студент-группа
         cursor.execute("""
                        CREATE TABLE IF NOT EXISTS student_groups
                        (
@@ -567,19 +615,16 @@ class Database:
                                INTEGER
                                NOT
                                    NULL,
-                           registration_id
-                               INTEGER,
-                           enrolled_at
+                           joined_at
                                TIMESTAMP
                                DEFAULT
                                    CURRENT_TIMESTAMP,
-                           completed_at
-                               TIMESTAMP
-                               NULL,
-                           status
-                               TEXT
+                           left_at
+                               TIMESTAMP,
+                           is_active
+                               BOOLEAN
                                DEFAULT
-                                   'active',
+                                   1,
                            FOREIGN
                                KEY
                                (
@@ -588,17 +633,11 @@ class Database:
                                (
                                 id
                                    ),
-                           FOREIGN KEY
+                           FOREIGN
+                               KEY
                                (
                                 group_id
                                    ) REFERENCES groups
-                               (
-                                id
-                                   ),
-                           FOREIGN KEY
-                               (
-                                registration_id
-                                   ) REFERENCES registrations
                                (
                                 id
                                    ),
@@ -627,23 +666,15 @@ class Database:
                                INTEGER
                                NOT
                                    NULL,
-                           topic
-                               TEXT
-                               NOT
-                                   NULL,
-                           description
-                               TEXT,
                            lesson_date
                                DATE
                                NOT
                                    NULL,
                            lesson_time
-                               TEXT,
-                           duration_minutes
-                               INTEGER
-                               DEFAULT
-                                   60,
-                           materials
+                               TEXT
+                               NOT
+                                   NULL,
+                           topic
                                TEXT,
                            homework
                                TEXT,
@@ -659,7 +690,8 @@ class Database:
                                (
                                 id
                                    ),
-                           FOREIGN KEY
+                           FOREIGN
+                               KEY
                                (
                                 teacher_id
                                    ) REFERENCES teachers
@@ -690,8 +722,6 @@ class Database:
                                TEXT
                                DEFAULT
                                    'present',
-                           notes
-                               TEXT,
                            created_at
                                TIMESTAMP
                                DEFAULT
@@ -704,7 +734,8 @@ class Database:
                                (
                                 id
                                    ),
-                           FOREIGN KEY
+                           FOREIGN
+                               KEY
                                (
                                 student_id
                                    ) REFERENCES students
@@ -732,15 +763,15 @@ class Database:
                                INTEGER
                                NOT
                                    NULL,
-                           text
+                           message
                                TEXT
                                NOT
                                    NULL,
-                           due_date
+                           remind_at
                                TIMESTAMP
                                NOT
                                    NULL,
-                           sent
+                           is_sent
                                BOOLEAN
                                DEFAULT
                                    0,
@@ -748,6 +779,8 @@ class Database:
                                TIMESTAMP
                                DEFAULT
                                    CURRENT_TIMESTAMP,
+                           sent_at
+                               TIMESTAMP,
                            FOREIGN
                                KEY
                                (
@@ -763,33 +796,20 @@ class Database:
         cursor.execute("""
                        CREATE TABLE IF NOT EXISTS feedback
                        (
-                           id
-                                      INTEGER
-                               PRIMARY
-                                   KEY
-                               AUTOINCREMENT,
-                           user_id
-                                      INTEGER
-                               NOT
-                                   NULL,
-                           registration_id
-                                      INTEGER,
-                           course_id
-                                      INTEGER,
-                           teacher_id
-                                      INTEGER,
-                           rating
-                                      INTEGER
-                               CHECK
-                                   (
-                                   rating
-                                       >=
-                                   1
-                                       AND
-                                   rating
-                                       <=
-                                   5
-                                   ),
+                           id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                           user_id    INTEGER NOT NULL,
+                           registration_id INTEGER,
+                           course_id  INTEGER,
+                           teacher_id INTEGER,
+                           rating     INTEGER CHECK
+                                                  (
+                                                      rating
+                                                          >=
+                                                      1
+                                                      AND rating
+                                                          <=
+                                                      5
+                                                      ),
                            comment    TEXT,
                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                            FOREIGN KEY
@@ -1007,4 +1027,3 @@ class Database:
         except Exception as e:
             self.logger.error(f"Error checking database structure: {e}")
             return False
-
