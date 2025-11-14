@@ -203,11 +203,11 @@ def initialize_database():
         conn.commit()
         conn.close()
 
-        logger.info("✅ Database initialization completed successfully")
+        logger.info("✅ database initialization completed successfully")
         return True
 
     except Exception as e:
-        logger.error(f"❌ Database initialization error: {e}", exc_info=True)
+        logger.error(f"❌ database initialization error: {e}", exc_info=True)
         return False
 
 
@@ -258,7 +258,7 @@ def check_database_integrity():
         return True
 
     except Exception as e:
-        logger.error(f"❌ Database check error: {e}")
+        logger.error(f"❌ database check error: {e}")
         return False
 
 
@@ -270,10 +270,10 @@ if __name__ == "__main__":
 
     print("🔧 Starting database initialization...")
     if initialize_database():
-        print("✅ Database initialized successfully")
+        print("✅ database initialized successfully")
         if check_database_integrity():
-            print("✅ Database integrity check passed")
+            print("✅ database integrity check passed")
         else:
-            print("⚠️ Database integrity check found issues")
+            print("⚠️ database integrity check found issues")
     else:
-        print("❌ Database initialization failed")
+        print("❌ database initialization failed")

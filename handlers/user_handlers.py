@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import logging
 import os
 import sys
 
@@ -15,9 +16,9 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
-import logging
 
 from states.user_states import RegistrationStates, FeedbackStates
+# noinspection PyProtectedMember
 from keyboards.user_kb import (
     get_main_keyboard,
     get_cancel_keyboard,
@@ -27,41 +28,63 @@ from keyboards.user_kb import (
     get_schedule_keyboard,
     get_cabinet_keyboard,
     get_materials_keyboard,
-    get_quiz_keyboard,
     get_feedback_types_keyboard,
     get_rating_keyboard,
-    get_feedback_confirmation_keyboard, get_progress_keyboard, get_quiz_results_keyboard
+    get_feedback_confirmation_keyboard,
+    get_progress_keyboard,
+    get_quiz_results_keyboard,
+    get_registrations_keyboard,
+    get_registration_detail_keyboard,
+    get_back_keyboard, get_quiz_question_keyboard
 )
 from utils.validators import validate_name, validate_phone, format_phone
 from config import Config
-from database import Database  # ✅ ДОБАВЛЕН ИМПОРТ!
+from helpers import get_db
 
 user_router = Router(name="user_router")
 config = Config()
-db = Database(config.DB_NAME)
+db = get_db()
 logger = logging.getLogger(__name__)
 
 
 # Главное меню и информация
 @user_router.message(Command("start"))
 async def start_command(message: Message):
+    """Обработчик команды /start"""
     await message.answer(
-        "🎓 Добро пожаловать!",
+        "🎓 Добро пожаловать в образовательный центр!\n\n"
+        "Выберите действие:",
         reply_markup=get_main_keyboard()
     )
 
 
 @user_router.message(Command("help"))
 async def help_command(message: Message):
-    await message.answer("Помощь по боту...")
+    """Обработчик команды /help"""
+    await message.answer(
+        "📖 *Помощь по боту:*\n\n"
+        "🎓 *Основные функции:*\n"
+        "• 📝 Новая запись - записаться на курс\n"
+        "• 👤 Мой кабинет - личный кабинет\n"
+        "• 📚 Курсы - список доступных курсов\n"
+        "• ℹ️ О центре - информация о нас\n"
+        "• 💬 Отзыв - оставить отзыв\n\n"
+        "📞 *Поддержка:*\n"
+        "Если возникли вопросы, свяжитесь с нами!",
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard()
+    )
 
 
 @user_router.callback_query(F.data == "new_registration")
 async def start_new_registration(callback: CallbackQuery, state: FSMContext):
+    """Начать новую регистрацию на курс"""
     await state.clear()
     await state.set_state(RegistrationStates.choosing_course)
+
     await callback.message.edit_text(
-        "🎓 Выберите курс для записи:",
+        "🎓 *Запись на курс*\n\nВыберите курс:",
+        parse_mode="Markdown",
         reply_markup=get_courses_keyboard()
     )
     await callback.answer()
@@ -91,18 +114,25 @@ async def about_center(callback: CallbackQuery):
 # Процесс регистрации
 @user_router.callback_query(F.data == "show_courses")
 async def show_courses(callback: CallbackQuery):
+    """Показать список курсов"""
     courses_text = "🎓 *Доступные курсы:*\n\n"
+
     for course, types_dict in config.COURSES.items():
         courses_text += f"*{course}:*\n"
         for training_type, price in types_dict.items():
             courses_text += f"  • {training_type}: {price}\n"
         courses_text += "\n"
-    await callback.message.edit_text(courses_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
+        await callback.message.edit_text(
+            courses_text,
+            parse_mode="Markdown",
+            reply_markup=get_back_keyboard("back_to_main")
+        )
     await callback.answer()
 
 
-@user_router.callback_query(F.data.startswith("course_"))
+@user_router.callback_query(F.data.startswith("course_"), RegistrationStates.choosing_course)
 async def choose_course(callback: CallbackQuery, state: FSMContext):
+    """Выбор курса"""
     try:
         course_idx = int(callback.data.replace("course_", ""))
         courses_list = list(config.COURSES.keys())
@@ -111,21 +141,30 @@ async def choose_course(callback: CallbackQuery, state: FSMContext):
             course = courses_list[course_idx]
             await state.update_data(course=course, course_idx=course_idx)
             await state.set_state(RegistrationStates.choosing_training_type)
-            keyboard = get_training_types_keyboard(course_idx)
-            await callback.message.edit_text("Выберите тип обучения:", reply_markup=keyboard)
+
+            await callback.message.edit_text(
+                f"🎓 *Курс: {course}*\n\nВыберите тип обучения:",
+                parse_mode="Markdown",
+                reply_markup=get_training_types_keyboard(course_idx)
+            )
+        else:
+            await callback.answer("❌ Неверный курс", show_alert=True)
+
     except ValueError as e:
         logger.error(f"Ошибка выбора курса: {e}")
-        await callback.answer("Ошибка выбора курса")
+        await callback.answer("❌ Ошибка выбора курса", show_alert=True)
+
     await callback.answer()
 
 
-@user_router.callback_query(F.data.startswith("type_"))
+@user_router.callback_query(F.data.startswith("type_"), RegistrationStates.choosing_training_type)
 async def choose_training_type(callback: CallbackQuery, state: FSMContext):
+    """Выбор типа обучения"""
     try:
-        data = callback.data.split("_")
-        if len(data) >= 3:
-            course_idx = int(data[1])
-            type_idx = int(data[2])
+        data_parts = callback.data.split("_")
+        if len(data_parts) >= 3:
+            course_idx = int(data_parts[1])
+            type_idx = int(data_parts[2])
 
             courses_list = list(config.COURSES.keys())
             if 0 <= course_idx < len(courses_list):
@@ -138,35 +177,55 @@ async def choose_training_type(callback: CallbackQuery, state: FSMContext):
 
                     await state.update_data(
                         training_type=training_type,
-                        price=price,
-                        course_idx=course_idx,
-                        type_idx=type_idx
+                        price=price
                     )
                     await state.set_state(RegistrationStates.choosing_schedule)
-                    await callback.message.edit_text("Выберите расписание:", reply_markup=get_schedule_keyboard())
+
+                    await callback.message.edit_text(
+                        f"📊 *Тип обучения: {training_type}*\n"
+                        f"💰 *Стоимость: {price}*\n\n"
+                        "Выберите расписание:",
+                        parse_mode="Markdown",
+                        reply_markup=get_schedule_keyboard()
+                    )
+
     except (ValueError, IndexError) as e:
         logger.error(f"Ошибка выбора типа обучения: {e}")
-        await callback.answer("Ошибка выбора типа обучения")
+        await callback.answer("❌ Ошибка выбора типа обучения", show_alert=True)
+
     await callback.answer()
 
 
-@user_router.callback_query(F.data.startswith("schedule_"))
+@user_router.callback_query(F.data.startswith("schedule_"), RegistrationStates.choosing_schedule)
 async def choose_schedule(callback: CallbackQuery, state: FSMContext):
+    """Выбор расписания"""
     try:
         schedule_idx = int(callback.data.replace("schedule_", ""))
+
         if 0 <= schedule_idx < len(config.SCHEDULES):
             schedule = config.SCHEDULES[schedule_idx]
-            await state.update_data(schedule=schedule, schedule_idx=schedule_idx)
+            await state.update_data(schedule=schedule)
             await state.set_state(RegistrationStates.waiting_for_name)
-            await callback.message.edit_text("Введите ваше имя и фамилию:", reply_markup=get_cancel_keyboard())
+
+            await callback.message.edit_text(
+                "👤 *Введите ваше имя и фамилию:*\n\n"
+                "Например: Иван Иванов",
+                parse_mode="Markdown",
+                reply_markup=get_cancel_keyboard()
+            )
+        else:
+            await callback.answer("❌ Неверное расписание", show_alert=True)
+
     except ValueError as e:
         logger.error(f"Ошибка выбора расписания: {e}")
-        await callback.answer("Ошибка выбора расписания")
+        await callback.answer("❌ Ошибка выбора расписания", show_alert=True)
+
     await callback.answer()
 
 
 @user_router.message(RegistrationStates.waiting_for_name)
 async def get_name(message: Message, state: FSMContext):
+    """Получение имени"""
     if message.text == "❌ Отмена":
         await state.clear()
         await message.answer("Отменено.", reply_markup=get_main_keyboard())
@@ -174,16 +233,26 @@ async def get_name(message: Message, state: FSMContext):
 
     is_valid, error_msg = validate_name(message.text)
     if not is_valid:
-        await message.answer(f"❌ {error_msg}\nПожалуйста, введите имя еще раз:")
+        await message.answer(
+            f"❌ {error_msg}\n\nПожалуйста, введите имя еще раз:",
+            reply_markup=get_cancel_keyboard()
+        )
         return
 
     await state.update_data(name=message.text)
     await state.set_state(RegistrationStates.waiting_for_phone)
-    await message.answer("Введите ваш номер телефона:", reply_markup=get_cancel_keyboard())
+
+    await message.answer(
+        "📞 *Введите ваш номер телефона:*\n\n"
+        "Например: +998901234567",
+        parse_mode="Markdown",
+        reply_markup=get_cancel_keyboard()
+    )
 
 
 @user_router.message(RegistrationStates.waiting_for_phone)
 async def get_phone(message: Message, state: FSMContext):
+    """Получение телефона"""
     if message.text == "❌ Отмена":
         await state.clear()
         await message.answer("Отменено.", reply_markup=get_main_keyboard())
@@ -191,7 +260,10 @@ async def get_phone(message: Message, state: FSMContext):
 
     is_valid, error_msg = validate_phone(message.text)
     if not is_valid:
-        await message.answer(f"❌ {error_msg}\nПожалуйста, введите номер телефона еще раз:")
+        await message.answer(
+            f"❌ {error_msg}\n\nПожалуйста, введите номер телефона еще раз:",
+            reply_markup=get_cancel_keyboard()
+        )
         return
 
     formatted_phone = format_phone(message.text)
@@ -208,79 +280,317 @@ async def get_phone(message: Message, state: FSMContext):
         f"💰 *Стоимость:* {data['price']}\n\n"
         "Всё верно?"
     )
+
     await state.set_state(RegistrationStates.confirmation)
-    await message.answer(confirmation_text, parse_mode="Markdown", reply_markup=get_confirmation_keyboard())
-
-
-@user_router.callback_query(F.data == "confirm", RegistrationStates.confirmation)
-async def confirm_registration(callback: CallbackQuery, state: FSMContext):
-    """Регистрация студента с автоматическим переводом в статус 'active'"""
-    data = await state.get_data()
-    success = db.save_registration(
-        user_id=callback.from_user.id,
-        name=data['name'],
-        phone=data['phone'],
-        course=data['course'],
-        training_type=data['training_type'],
-        schedule=data['schedule'],
-        price=data['price']
+    await message.answer(
+        confirmation_text,
+        parse_mode="Markdown",
+        reply_markup=get_confirmation_keyboard()
     )
 
-    if success:
-        # === НОВОЕ: АВТОМАТИЧЕСКИ УСТАНАВЛИВАЕМ СТАТУС 'ACTIVE' ===
-        registrations = db.get_user_registrations(callback.from_user.id)
-        if registrations:
-            latest_reg = registrations[0]
-            db.update_status(latest_reg.id, 'active')
-            logger.info(f"✅ Студент {data['name']} (ID: {latest_reg.id}) зарегистрирован с статусом 'active'")
 
-        await callback.message.edit_text(
-            "🎉 *Запись успешно оформлена!*\n\n"
-            "✅ Ваш статус: *Активный студент*\n"
-            "⏳ Администратор свяжется с вами для консультации\n"
-            "или назначения пробного урока.\n\n"
-            "Вы можете отслеживать статус в разделе «👤 Мой кабинет».",
-            parse_mode="Markdown",
-            reply_markup=get_main_keyboard()
+@user_router.callback_query(F.data == "confirm_registration", RegistrationStates.confirmation)
+async def confirm_registration(callback: CallbackQuery, state: FSMContext):
+    """Подтверждение регистрации"""
+    try:
+        data = await state.get_data()
+
+        print(f"🔍 DEBUG: Starting registration confirmation for user {callback.from_user.id}")
+        print(f"🔍 DEBUG: Registration data: {data}")
+
+        user_query = """
+                     INSERT \
+                         OR IGNORE
+                     INTO users (telegram_id, full_name, phone)
+                     VALUES (?, ?, ?) \
+                     """
+        db.execute_update(user_query, (
+            callback.from_user.id,
+            data['name'],
+            data['phone']
+        ))
+
+        # Получаем user_id
+        user_query = "SELECT id FROM users WHERE telegram_id = ?"
+        user_rows = db.execute_query(user_query, (callback.from_user.id,))
+        user_id = user_rows[0]['id'] if user_rows else None
+
+        if not user_id:
+            await callback.message.edit_text("❌ Ошибка создания пользователя")
+            return
+
+        # Получаем ID курса по названию
+        course_query = "SELECT id FROM courses WHERE name = ?"
+        course_rows = db.execute_query(course_query, (data['course'],))
+        course_id = course_rows[0]['id'] if course_rows else 1  # По умолчанию первый курс
+
+        # Получаем ID типа обучения
+        training_query = "SELECT id FROM training_types WHERE name = ?"
+        training_rows = db.execute_query(training_query, (data['training_type'],))
+        training_type_id = training_rows[0]['id'] if training_rows else 1
+
+        # Получаем ID расписания
+        schedule_query = "SELECT id FROM schedules WHERE name = ?"
+        schedule_rows = db.execute_query(schedule_query, (data['schedule'],))
+        schedule_id = schedule_rows[0]['id'] if schedule_rows else 1
+
+        # Создаем регистрацию
+        reg_id = db.registrations.create(
+            user_id=user_id,
+            course_id=course_id,
+            training_type_id=training_type_id,
+            schedule_id=schedule_id,
+            status='active'
         )
 
-        # === ОТПРАВКА УВЕДОМЛЕНИЯ АДМИНИСТРАТОРАМ ===
-        try:
-            message_text = (
-                "📝 *НОВАЯ РЕГИСТРАЦИЯ СТУДЕНТА*\n\n"
-                f"👤 *Имя:* {data['name']}\n"
-                f"📞 *Телефон:* `{data['phone']}`\n"
-                f"📚 *Курс:* {data['course']}\n"
-                f"🎓 *Тип:* {data['training_type']}\n"
-                f"⏰ *Расписание:* {data['schedule']}\n"
-                f"💰 *Стоимость:* {data['price']}\n"
-                f"✅ *Статус:* Активный студент\n"
-                f"📍 *ID Пользователя:* {callback.from_user.id}\n\n"
-                f"*Требуется:*\n"
-                f"1. Позвонить для консультации\n"
-                f"2. Назначить пробный урок\n"
-                f"3. Перевести в статус 'Пробный урок'"
+    except Exception as e:
+        logger.error(f"Ошибка подтверждения регистрации: {e}", exc_info=True)
+        print(f"❌ DEBUG: Exception in confirm_registration: {e}")
+        await callback.message.edit_text(
+            "❌ Произошла ошибка при сохранении. Попробуйте позже.",
+            reply_markup=get_main_keyboard()
+        )
+        await state.clear()
+        await callback.answer()
+
+
+async def send_registration_to_admins(bot, data, user):
+    """Отправка уведомления о новой регистрации администраторам"""
+    try:
+        message_text = (
+            "🆕 *НОВАЯ РЕГИСТРАЦИЯ!*\n\n"
+            f"👤 *Имя:* {data['name']}\n"
+            f"📞 *Телефон:* {data['phone']}\n"
+            f"🆔 *Telegram ID:* {user.id}\n"
+            f"📝 *Username:* @{user.username or 'не указан'}\n\n"
+            f"🎓 *Курс:* {data['course']}\n"
+            f"📊 *Тип обучения:* {data['training_type']}\n"
+            f"⏰ *Расписание:* {data['schedule']}\n"
+            f"💰 *Стоимость:* {data['price']}\n\n"
+            f"🕒 *Время:* {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        )
+
+        for admin_id in config.ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, message_text, parse_mode="Markdown")
+            except Exception as e:
+                logger.error(f"Ошибка отправки администратору {admin_id}: {e}")
+
+    except Exception as e:
+        logger.error(f"Ошибка send_registration_to_admins: {e}")
+
+
+@user_router.callback_query(F.data == "leave_feedback")
+async def show_feedback_menu(callback: CallbackQuery, state: FSMContext):
+    """Показать меню обратной связи"""
+    await state.clear()
+
+    # Сохраняем информацию о пользователе
+    await state.update_data(
+        user_id=callback.from_user.id,
+        user_name=callback.from_user.full_name or callback.from_user.username or "Пользователь"
+    )
+
+    await callback.message.edit_text(
+        "💬 *Обратная связь*\n\n"
+        "Выберите тип обращения:",
+        parse_mode="Markdown",
+        reply_markup=get_feedback_types_keyboard()
+    )
+    await callback.answer()
+
+
+@user_router.callback_query(F.data.in_(["feedback_review", "feedback_suggestion", "feedback_issue"]))
+async def handle_feedback_type(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора типа обратной связи"""
+    feedback_types = {
+        "feedback_review": "review",
+        "feedback_suggestion": "suggestion",
+        "feedback_issue": "issue"
+    }
+
+    feedback_type = feedback_types[callback.data]
+    await state.update_data(feedback_type=feedback_type)
+
+    if feedback_type == "review":
+        await state.set_state(FeedbackStates.waiting_for_rating)
+        await callback.message.edit_text(
+            "⭐ *Оцените наш образовательный центр*\n\n"
+            "Выберите оценку от 1 до 5 звезд:",
+            parse_mode="Markdown",
+            reply_markup=get_rating_keyboard()
+        )
+    else:
+        await state.set_state(FeedbackStates.waiting_for_feedback_text)
+        prompts = {
+            "suggestion": "💡 *Предложение по улучшению*\n\nНапишите ваше предложение:",
+            "issue": "🐞 *Сообщение о проблеме*\n\nОпишите возникшую проблему:"
+        }
+        await callback.message.edit_text(
+            prompts[feedback_type],
+            parse_mode="Markdown",
+            reply_markup=get_cancel_keyboard()
+        )
+
+    await callback.answer()
+
+
+@user_router.callback_query(F.data.startswith("rating_"), FeedbackStates.waiting_for_rating)
+async def get_rating(callback: CallbackQuery, state: FSMContext):
+    """Получение оценки"""
+    rating = int(callback.data.replace("rating_", ""))
+    await state.update_data(rating=rating)
+    await state.set_state(FeedbackStates.waiting_for_feedback_text)
+
+    await callback.message.edit_text(
+        f"📝 *Напишите ваш отзыв*\n\n"
+        f"Вы выбрали оценку: {'⭐' * rating}\n\n"
+        "Теперь напишите ваш отзыв о центре:",
+        parse_mode="Markdown",
+        reply_markup=get_cancel_keyboard()
+    )
+    await callback.answer()
+
+
+@user_router.message(FeedbackStates.waiting_for_feedback_text)
+async def get_feedback_text(message: Message, state: FSMContext):
+    """Получение текста обратной связи"""
+    if message.text == "❌ Отмена":
+        await state.clear()
+        await message.answer("Отменено.", reply_markup=get_main_keyboard())
+        return
+
+    data = await state.get_data()
+    await state.update_data(feedback_text=message.text)
+
+    type_names = {
+        "review": "Отзыв",
+        "suggestion": "Предложение",
+        "issue": "Сообщение о проблеме"
+    }
+
+    confirmation_text = "📋 *Проверьте ваше обращение:*\n\n"
+    confirmation_text += f"📝 *Тип:* {type_names[data['feedback_type']]}\n"
+
+    if data['feedback_type'] == 'review':
+        confirmation_text += f"⭐ *Оценка:* {data['rating']}/5\n"
+
+    confirmation_text += f"📄 *Текст:*\n{message.text}\n\nВсё верно?"
+
+    await message.answer(
+        confirmation_text,
+        parse_mode="Markdown",
+        reply_markup=get_feedback_confirmation_keyboard()
+    )
+
+
+@user_router.callback_query(F.data == "feedback_send")
+async def send_feedback(callback: CallbackQuery, state: FSMContext):
+    """Отправка обратной связи"""
+    try:
+        data = await state.get_data()
+
+        # Сохраняем в БД
+        success = db.save_feedback(
+            user_id=data['user_id'],
+            user_name=data['user_name'],
+            feedback_type=data['feedback_type'],
+            feedback_text=data['feedback_text'],
+            rating=data.get('rating'),
+            created_at=datetime.datetime.now()
+        )
+
+        if success:
+            # Отправляем администраторам
+            await send_feedback_to_admins(callback.bot, data)
+
+            await callback.message.edit_text(
+                "✅ *Спасибо за вашу обратную связь!*\n\n"
+                "Мы ценим ваше мнение и обязательно рассмотрим ваше обращение.",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard()
+            )
+        else:
+            await callback.message.edit_text(
+                "❌ *Произошла ошибка*\n\nПопробуйте позже.",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard()
             )
 
-            if hasattr(config, 'CHANNEL_ID') and config.CHANNEL_ID:
-                await callback.bot.send_message(config.CHANNEL_ID, message_text, parse_mode="Markdown")
-                logger.info(f"✅ Уведомление отправлено в канал {config.CHANNEL_ID}")
+        await state.clear()
+        await callback.answer()
 
-        except Exception as e:
-            logger.error(f"❌ Ошибка при отправке уведомления: {e}")
-
-    else:
+    except Exception as e:
+        logger.error(f"Ошибка отправки feedback: {e}", exc_info=True)
         await callback.message.edit_text(
-            "❌ Произошла ошибка при сохранении запи. Пожалуйста, попробуйте позже.",
+            "❌ Произошла ошибка",
             reply_markup=get_main_keyboard()
         )
+        await state.clear()
+        await callback.answer()
 
-    await state.clear()
+
+@user_router.callback_query(F.data == "feedback_edit")
+async def edit_feedback(callback: CallbackQuery, state: FSMContext):
+    """Редактирование обратной связи"""
+    await state.set_state(FeedbackStates.waiting_for_feedback_text)
+
+    await callback.message.edit_text(
+        "📝 *Исправьте текст:*\n\n"
+        "Напишите исправленный вариант:",
+        parse_mode="Markdown",
+        reply_markup=get_cancel_keyboard()
+    )
+    await callback.answer()
+
+
+async def send_feedback_to_admins(bot, feedback_data):
+    """Отправка уведомления о feedback администраторам"""
+    try:
+        type_names = {
+            "review": "📝 НОВЫЙ ОТЗЫВ",
+            "suggestion": "💡 НОВОЕ ПРЕДЛОЖЕНИЕ",
+            "issue": "🐞 СООБЩЕНИЕ О ПРОБЛЕМЕ"
+        }
+
+        message_text = (
+            f"{type_names[feedback_data['feedback_type']]}\n\n"
+            f"👤 *Пользователь:* {feedback_data['user_name']}\n"
+            f"🆔 *ID:* {feedback_data['user_id']}\n"
+        )
+
+        if feedback_data['feedback_type'] == 'review':
+            message_text += f"⭐ *Оценка:* {feedback_data['rating']}/5\n"
+
+        message_text += (
+            f"📄 *Текст:*\n{feedback_data['feedback_text']}\n\n"
+            f"🕒 *Время:* {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        )
+
+        for admin_id in config.ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, message_text, parse_mode="Markdown")
+            except Exception as e:
+                logger.error(f"Ошибка отправки администратору {admin_id}: {e}")
+
+    except Exception as e:
+        logger.error(f"Ошибка send_feedback_to_admins: {e}")
+
 
 # Функционал кабинета
 @user_router.callback_query(F.data == "show_cabinet")
 async def show_cabinet(callback: CallbackQuery):
-    registrations = db.get_user_registrations(callback.from_user.id)
+    # Получаем user_id по telegram_id
+    query_user = "SELECT id FROM users WHERE telegram_id = ?"
+    user_rows = db.execute_query(query_user, (callback.from_user.id,))
+    if not user_rows:
+        await callback.message.edit_text("Вы еще не зарегистрированы.", reply_markup=get_main_keyboard())
+        return
+
+    user_id = user_rows[0]['id']
+
+    # Получаем регистрации пользователя
+    registrations = db.registrations.get_by_user_id(user_id)
     if not registrations:
         await callback.message.edit_text(
             "У вас пока нет активных записей.\n\nХотите записаться на курс? Нажмите «📝 Новая запись»!",
@@ -290,22 +600,32 @@ async def show_cabinet(callback: CallbackQuery):
 
     for reg in registrations:
         cabinet_text = (
-            f"📋 *Ваша запись #{reg.id}:*\n\n"
-            f"🎯 *Курс:* {reg.course}\n"
-            f"📊 *Тип:* {reg.training_type}\n"
-            f"⏰ *Расписание:* {reg.schedule}\n"
-            f"💰 *Стоимость:* {reg.price}\n"
-            f"📅 *Дата записи:* {reg.created_at}\n"
+            f"📋 *Ваша запись #{reg['id']}:*\n\n"
+            f"🎯 *Курс:* {reg['course_name']}\n"
+            f"📊 *Тип:* {reg['training_type_name']}\n"
+            f"⏰ *Расписание:* {reg['schedule_name']}\n"
+            f"💰 *Стоимость:* {reg['price']}\n"
+            f"📅 *Дата записи:* {reg['created_at']}\n"
         )
         await callback.message.answer(cabinet_text, parse_mode="Markdown")
 
-    await callback.message.answer("Дополнительные функции:", reply_markup=get_cabinet_keyboard(has_registrations=True))
+    await callback.message.answer("Дополнительные функции:", reply_markup=get_cabinet_keyboard())
     await callback.answer()
 
 
 @user_router.callback_query(F.data == "show_materials")
 async def show_materials(callback: CallbackQuery):
-    registrations = db.get_user_registrations(callback.from_user.id)
+    # Получаем user_id по telegram_id
+    query_user = "SELECT id FROM users WHERE telegram_id = ?"
+    user_rows = db.execute_query(query_user, (callback.from_user.id,))
+    if not user_rows:
+        await callback.message.edit_text("Вы еще не зарегистрированы.", reply_markup=get_main_keyboard())
+        return
+
+    user_id = user_rows[0]['id']
+
+    # Получаем регистрации пользователя
+    registrations = db.registrations.get_by_user_id(user_id)
 
     if not registrations:
         await callback.message.edit_text("У вас нет активных курсов.", reply_markup=get_main_keyboard())
@@ -318,6 +638,7 @@ async def show_materials(callback: CallbackQuery):
     )
     await callback.answer()
 
+
 @user_router.callback_query(F.data == "add_reminder")
 async def add_reminder_start(callback: CallbackQuery):
     """Начало добавления напоминания"""
@@ -327,6 +648,7 @@ async def add_reminder_start(callback: CallbackQuery):
         parse_mode="Markdown",
         reply_markup=get_cancel_keyboard()
     )
+
 
 @user_router.callback_query(F.data == "show_reminders")
 async def show_reminders(callback: CallbackQuery):
@@ -368,7 +690,17 @@ async def show_reminders(callback: CallbackQuery):
 @user_router.callback_query(F.data == "show_progress")
 async def show_progress(callback: CallbackQuery):
     """Показать прогресс обучения"""
-    registrations = db.get_user_registrations(callback.from_user.id)
+    # Получаем user_id по telegram_id
+    query_user = "SELECT id FROM users WHERE telegram_id = ?"
+    user_rows = db.execute_query(query_user, (callback.from_user.id,))
+    if not user_rows:
+        await callback.message.edit_text("Вы еще не зарегистрированы.", reply_markup=get_main_keyboard())
+        return
+
+    user_id = user_rows[0]['id']
+
+    # Получаем регистрации пользователя
+    registrations = db.registrations.get_by_user_id(user_id)
 
     if not registrations:
         await callback.message.edit_text(
@@ -385,7 +717,7 @@ async def show_progress(callback: CallbackQuery):
         grade_value = getattr(reg, 'grade', 'Нет оценки')
 
         progress_text += (
-            f"📚 *{reg.course}*\n"
+            f"📚 *{reg['course_name']}*\n"
             f"📈 Прогресс: {progress_value:.1f}%\n"
             f"📅 Посещаемость: {attendance_value} занятий\n"
         )
@@ -406,7 +738,17 @@ async def show_progress(callback: CallbackQuery):
 @user_router.callback_query(F.data == "start_quiz")
 async def start_quiz(callback: CallbackQuery, state: FSMContext):
     """Начать тест/викторину"""
-    registrations = db.get_user_registrations(callback.from_user.id)
+    # Получаем user_id по telegram_id
+    query_user = "SELECT id FROM users WHERE telegram_id = ?"
+    user_rows = db.execute_query(query_user, (callback.from_user.id,))
+    if not user_rows:
+        await callback.message.edit_text("Вы еще не зарегистрированы.", reply_markup=get_main_keyboard())
+        return
+
+    user_id = user_rows[0]['id']
+
+    # Получаем регистрации пользователя
+    registrations = db.registrations.get_by_user_id(user_id)
 
     if not registrations:
         await callback.message.edit_text(
@@ -478,7 +820,7 @@ async def show_quiz_question(message, state: FSMContext, question_index: int, co
     await message.edit_text(
         question_text,
         parse_mode="Markdown",
-        reply_markup=get_quiz_keyboard(question_index, question['options'])
+        reply_markup=get_quiz_question_keyboard(question_index, question['options'])
     )
 
 
@@ -537,11 +879,22 @@ async def handle_quiz_answer(callback: CallbackQuery, state: FSMContext):
         logger.error(f"Error in quiz handler: {e}")
         await callback.answer("❌ Ошибка обработки ответа")
 
+
 # Обратная связь
 @user_router.callback_query(F.data == "give_feedback")
 async def start_feedback(callback: CallbackQuery, state: FSMContext):
     """Начало процесса обратной связи"""
-    registrations = db.get_user_registrations(callback.from_user.id)
+    # Получаем user_id по telegram_id
+    query_user = "SELECT id FROM users WHERE telegram_id = ?"
+    user_rows = db.execute_query(query_user, (callback.from_user.id,))
+    if not user_rows:
+        await callback.message.edit_text("Вы еще не зарегистрированы.", reply_markup=get_main_keyboard())
+        return
+
+    user_id = user_rows[0]['id']
+
+    # Получаем регистрации пользователя
+    registrations = db.registrations.get_by_user_id(user_id)
 
     if not registrations:
         await callback.message.edit_text(
@@ -719,6 +1072,7 @@ async def handle_feedback_type_selection(callback: CallbackQuery, state: FSMCont
         prompt = "💡 Опишите ваше предложение:" if feedback_type == "suggestion" else "🐞 Опишите проблему:"
         await callback.message.edit_text(prompt, reply_markup=get_cancel_keyboard())
 
+
 @user_router.callback_query(F.data == "feedback_edit")
 async def edit_feedback(callback: CallbackQuery, state: FSMContext):
     """Редактирование обратной связи"""
@@ -773,29 +1127,485 @@ async def send_feedback_to_admins(bot, feedback_data):
 # Общие обработчики
 @user_router.callback_query(F.data == "cancel")
 async def cancel_action(callback: CallbackQuery, state: FSMContext):
+    """Отмена действия"""
     await state.clear()
-    await callback.message.edit_text("Отменено.", reply_markup=get_main_keyboard())
+
+    await callback.message.edit_text(
+        "❌ Отменено",
+        reply_markup=get_main_keyboard()
+    )
     await callback.answer()
 
 
 @user_router.callback_query(F.data == "back_to_main")
 async def back_to_main(callback: CallbackQuery, state: FSMContext):
-    """Возврат в главное меню с обработкой ошибок редактирования"""
+    """Возврат в главное меню"""
     await state.clear()
 
     try:
         await callback.message.edit_text(
-            "Добро пожаловать в главное меню!",
+            "🏠 *Главное меню*\n\nВыберите действие:",
+            parse_mode="Markdown",
             reply_markup=get_main_keyboard()
         )
     except aiogram.exceptions.TelegramBadRequest:
         await callback.message.answer(
-            "Добро пожаловать в главное меню!",
+            "🏠 *Главное меню*\n\nВыберите действие:",
+            parse_mode="Markdown",
             reply_markup=get_main_keyboard()
         )
 
     await callback.answer()
 
 
+@user_router.callback_query(F.data == "about_center")
+async def about_center(callback: CallbackQuery):
+    """Информация о центре"""
+    about_text = (
+        "🏫 *О нашем образовательном центре*\n\n"
+        "Мы предоставляем качественное образование по различным направлениям.\n\n"
+        "📞 *Контакты:*\n"
+        "Телефон: +998 XX XXX-XX-XX\n"
+        "Email: info@example.com\n"
+        "Адрес: г. Ташкент, ул. ...\n\n"
+        "🕒 *Часы работы:*\n"
+        "Пн-Пт: 9:00-18:00\n"
+        "Сб: 10:00-15:00\n"
+        "Вс: выходной"
+    )
+
+    await callback.message.edit_text(
+        about_text,
+        parse_mode="Markdown",
+        reply_markup=get_back_keyboard("back_to_main")
+    )
+    await callback.answer()
+
+
+@user_router.callback_query(F.data == "show_courses")
+async def show_courses(callback: CallbackQuery):
+    """Показать список курсов"""
+    courses_text = "🎓 *Доступные курсы:*\n\n"
+
+    for course, types_dict in config.COURSES.items():
+        courses_text += f"*{course}:*\n"
+        for training_type, price in types_dict.items():
+            courses_text += f"  • {training_type}: {price}\n"
+        courses_text += "\n"
+
+    await callback.message.edit_text(
+        courses_text,
+        parse_mode="Markdown",
+        reply_markup=get_back_keyboard("back_to_main")
+    )
+    await callback.answer()
+
+    @user_router.callback_query(F.data == "my_registrations")
+    async def show_my_registrations(callback: CallbackQuery):
+        """Показать список записей пользователя"""
+        try:
+            # Получаем user_id по telegram_id
+            query_user = "SELECT id FROM users WHERE telegram_id = ?"
+            user_rows = db.execute_query(query_user, (callback.from_user.id,))
+
+            if not user_rows:
+                await callback.message.edit_text(
+                    "Вы еще не зарегистрированы.",
+                    reply_markup=get_main_keyboard()
+                )
+                await callback.answer()
+                return
+
+            user_id = user_rows[0]['id']
+
+            # Получаем регистрации пользователя
+            registrations = db.registrations.get_by_user_id(user_id)
+
+            if not registrations:
+                await callback.message.edit_text(
+                    "📝 *У вас пока нет записей на курсы*\n\n"
+                    "Хотите записаться на курс?",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="📝 Записаться на курс", callback_data="new_registration")],
+                        [InlineKeyboardButton(text="◀️ Назад", callback_data="show_cabinet")]
+                    ])
+                )
+            else:
+                text = "📋 *Ваши записи на курсы:*\n\n"
+
+                for idx, reg in enumerate(registrations, 1):
+                    status_emoji = {
+                        'active': '🟢',
+                        'trial': '🟡',
+                        'studying': '🔵',
+                        'frozen': '⚪',
+                        'waiting_payment': '🟠',
+                        'completed': '🟣'
+                    }.get(reg['status_code'], '⚫')
+
+                    status_text = config.STATUSES.get(reg['status_code'], reg['status_code'])
+
+                    text += (
+                        f"*{idx}. {reg['course_name']}* {status_emoji}\n"
+                        f"   📊 Статус: {status_text}\n"
+                        f"   📅 Дата: {reg['created_at'][:10]}\n\n"
+                    )
+
+                await callback.message.edit_text(
+                    text,
+                    parse_mode="Markdown",
+                    reply_markup=get_registrations_keyboard(registrations)
+                )
+
+            await callback.answer()
+
+        except Exception as e:
+            logger.error(f"Ошибка в show_my_registrations: {str(e)}", exc_info=True)
+            try:
+                await callback.message.edit_text(
+                    text="❌ *Произошла ошибка*\n\n"
+                         "Не удалось загрузить список записей. Пожалуйста, попробуйте позже.",
+                    parse_mode="Markdown",
+                    reply_markup=get_cabinet_keyboard()
+                )
+            except Exception as edit_error:
+                logger.error(f"Не удалось отредактировать сообщение: {edit_error}")
+
+            await callback.answer()
+
+
+@user_router.callback_query(F.data.startswith("registration_detail_"))
+async def show_registration_detail(callback: CallbackQuery):
+    """✅ ИСПРАВЛЕНО: Показать детальную информацию о регистрации"""
+    try:
+        # Извлекаем ID регистрации
+        reg_id = int(callback.data.replace("registration_detail_", ""))
+
+        # Получаем регистрацию (✅ ИСПРАВЛЕНА ЗАКРЫВАЮЩАЯ СКОБКА)
+        registration = db.get_registration_by_id(reg_id)
+
+        if not registration:
+            await callback.message.edit_text(
+                "❌ Регистрация не найдена",
+                reply_markup=get_back_keyboard("my_registrations", "◀️ К списку записей")
+            )
+            await callback.answer()
+            return
+
+        # Формируем детальную информацию
+        status_emoji = {
+            'active': '🟢',
+            'trial': '🟡',
+            'studying': '🔵',
+            'frozen': '⚪',
+            'waiting_payment': '🟠',
+            'completed': '🟣'
+        }.get(registration.status, '⚫')
+
+        status_text = config.STATUSES.get(registration.status, registration.status)
+
+        detail_text = (
+            f"📋 *Детали записи* {status_emoji}\n\n"
+            f"🎓 *Курс:* {registration.course}\n"
+            f"📊 *Тип обучения:* {registration.training_type}\n"
+            f"⏰ *Расписание:* {registration.schedule}\n"
+            f"💰 *Стоимость:* {registration.price}\n"
+            f"📌 *Статус:* {status_text}\n"
+        )
+
+        if registration.created_at:
+            detail_text += f"📅 *Дата записи:* {registration.created_at.strftime('%d.%m.%Y %H:%M')}\n"
+
+        await callback.message.edit_text(
+            detail_text,
+            parse_mode="Markdown",
+            reply_markup=get_registration_detail_keyboard(registration.id)
+        )
+        await callback.answer()
+
+    except ValueError:
+        logger.error(f"Неверный формат ID в registration_detail: {callback.data}")
+        await callback.answer("❌ Ошибка: неверный формат данных", show_alert=True)
+    except Exception as e:
+        logger.error(f"Ошибка в show_registration_detail: {e}", exc_info=True)
+        await callback.message.edit_text(
+            "❌ Произошла ошибка при загрузке информации",
+            reply_markup=get_back_keyboard("my_registrations", "◀️ К списку записей")
+        )
+        await callback.answer()
+
+
+@user_router.callback_query(F.data == "show_materials")
+async def show_my_materials(callback: CallbackQuery):
+    """✅ ИСПРАВЛЕНО: Показать материалы курсов"""
+    try:
+        # Получаем пользователя (✅ ИСПРАВЛЕНА ЗАКРЫВАЮЩАЯ СКОБКА)
+        user = db.get_user_by_telegram_id(callback.from_user.id)
+
+        if not user:
+            await callback.message.edit_text(
+                "❌ Пользователь не найден",
+                reply_markup=get_cabinet_keyboard()
+            )
+            await callback.answer()
+            return
+
+        # Получаем активные регистрации пользователя
+        registrations = db.get_registrations_by_user_id(user.id)
+        active_registrations = [r for r in registrations if r.status in ['active', 'studying']]
+
+        if not active_registrations:
+            await callback.message.edit_text(
+                "📚 *Материалы курсов*\n\n"
+                "У вас пока нет активных курсов.\n"
+                "Запишитесь на курс, чтобы получить доступ к материалам!",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📝 Записаться на курс", callback_data="new_registration")],
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="show_cabinet")]
+                ])
+            )
+            await callback.answer()
+            return
+
+        # Собираем уникальные курсы
+        courses = list(set([r.course for r in active_registrations]))
+
+        # Формируем клавиатуру с материалами
+        buttons = []
+
+        for course in courses:
+            if course in config.MATERIALS:
+                materials = config.MATERIALS[course]
+
+                # Добавляем заголовок курса
+                buttons.append([InlineKeyboardButton(
+                    text=f"📚 {course}",
+                    callback_data=f"materials_course_{course}"
+                )])
+
+                # Добавляем ссылки на материалы
+                for title, url in materials.items():
+                    buttons.append([InlineKeyboardButton(text=f"  📄 {title}", url=url)])
+
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="show_cabinet")])
+
+        await callback.message.edit_text(
+            "📚 *Материалы ваших курсов:*\n\n"
+            "Выберите материал для просмотра:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+        await callback.answer()
+
+    except Exception as e:
+        logger.error(f"Ошибка в show_my_materials: {e}", exc_info=True)
+        await callback.message.edit_text(
+            "❌ Произошла ошибка при загрузке материалов",
+            reply_markup=get_cabinet_keyboard()
+        )
+        await callback.answer()
+
+
+@user_router.callback_query(F.data == "show_progress")
+async def show_my_progress(callback: CallbackQuery):
+    """✅ ИСПРАВЛЕНО: Показать прогресс обучения"""
+    try:
+        # Получаем пользователя (✅ ИСПРАВЛЕНА ЗАКРЫВАЮЩАЯ СКОБКА)
+        user = db.get_user_by_telegram_id(callback.from_user.id)
+
+        if not user:
+            await callback.message.edit_text(
+                "❌ Пользователь не найден",
+                reply_markup=get_cabinet_keyboard()
+            )
+            await callback.answer()
+            return
+
+        # Получаем регистрации
+        registrations = db.get_registrations_by_user_id(user.id)
+
+        if not registrations:
+            await callback.message.edit_text(
+                "📊 *Ваш прогресс*\n\n"
+                "У вас пока нет записей на курсы.\n"
+                "Запишитесь на курс, чтобы отслеживать свой прогресс!",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📝 Записаться на курс", callback_data="new_registration")],
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="show_cabinet")]
+                ])
+            )
+            await callback.answer()
+            return
+
+        # Собираем статистику
+        total_courses = len(registrations)
+        active_courses = len([r for r in registrations if r.status in ['active', 'studying']])
+        completed_courses = len([r for r in registrations if r.status == 'completed'])
+
+        progress_text = (
+            "📊 *Ваш прогресс обучения*\n\n"
+            f"📚 Всего курсов: {total_courses}\n"
+            f"🔵 Активных: {active_courses}\n"
+            f"🟣 Завершено: {completed_courses}\n\n"
+        )
+
+        # Добавляем информацию по каждому курсу
+        if active_courses > 0:
+            progress_text += "*Активные курсы:*\n"
+            for reg in registrations:
+                if reg['status_code'] in ['active', 'studying']:
+                    progress_text += f"• {reg['course_name']} - {config.STATUSES.get(reg['status_code'], reg['status_code'])}\n"
+
+        await callback.message.edit_text(
+            progress_text,
+            parse_mode="Markdown",
+            reply_markup=get_progress_keyboard()
+        )
+        await callback.answer()
+
+    except Exception as e:
+        logger.error(f"Ошибка в show_my_progress: {e}", exc_info=True)
+        await callback.message.edit_text(
+            "❌ Произошла ошибка при загрузке прогресса",
+            reply_markup=get_cabinet_keyboard()
+        )
+        await callback.answer()
+
+
+@user_router.callback_query(F.data == "my_schedule")
+async def show_my_schedule(callback: CallbackQuery):
+    """✅ ИСПРАВЛЕНО: Показать расписание занятий"""
+    try:
+        # Получаем пользователя (✅ ИСПРАВЛЕНА ЗАКРЫВАЮЩАЯ СКОБКА)
+        user = db.get_user_by_telegram_id(callback.from_user.id)
+
+        if not user:
+            await callback.message.edit_text(
+                "❌ Пользователь не найден",
+                reply_markup=get_cabinet_keyboard()
+            )
+            await callback.answer()
+            return
+
+        # Получаем активные регистрации
+        registrations = db.get_registrations_by_user_id(user.id)
+        active_registrations = [r for r in registrations if r.status in ['active', 'studying']]
+
+        if not active_registrations:
+            await callback.message.edit_text(
+                "📅 *Ваше расписание*\n\n"
+                "У вас пока нет активных курсов.\n"
+                "Запишитесь на курс, чтобы увидеть расписание!",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📝 Записаться на курс", callback_data="new_registration")],
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="show_cabinet")]
+                ])
+            )
+            await callback.answer()
+            return
+
+        # Формируем расписание
+        schedule_text = "📅 *Ваше расписание занятий:*\n\n"
+
+        for idx, reg in enumerate(active_registrations, 1):
+            schedule_text += (
+                f"*{idx}. {reg['course_name']}*\n"
+                f"   ⏰ {reg['schedule_name']}\n"
+                f"   📊 {reg['training_type_name']}\n\n"
+            )
+
+        await callback.message.edit_text(
+            schedule_text,
+            parse_mode="Markdown",
+            reply_markup=get_back_keyboard("show_cabinet")
+        )
+        await callback.answer()
+
+    except Exception as e:
+        logger.error(f"Ошибка в show_my_schedule: {e}", exc_info=True)
+        await callback.message.edit_text(
+            "❌ Произошла ошибка при загрузке расписания",
+            reply_markup=get_cabinet_keyboard()
+        )
+        await callback.answer()
+
+
+@user_router.callback_query(F.data == "start_quiz")
+async def show_quiz_menu(callback: CallbackQuery):
+    """✅ ИСПРАВЛЕНО: Показать меню тестов"""
+    try:
+        # Получаем пользователя (✅ ИСПРАВЛЕНА ЗАКРЫВАЮЩАЯ СКОБКА)
+        user = db.get_user_by_telegram_id(callback.from_user.id)
+
+        if not user:
+            await callback.message.edit_text(
+                "❌ Пользователь не найден",
+                reply_markup=get_cabinet_keyboard()
+            )
+            await callback.answer()
+            return
+
+        # Получаем активные курсы
+        registrations = db.get_registrations_by_user_id(user.id)
+        active_registrations = [r for r in registrations if r.status in ['active', 'studying']]
+
+        if not active_registrations:
+            await callback.message.edit_text(
+                "🎯 *Тесты и викторины*\n\n"
+                "У вас пока нет активных курсов.\n"
+                "Запишитесь на курс, чтобы проходить тесты!",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📝 Записаться на курс", callback_data="new_registration")],
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="show_cabinet")]
+                ])
+            )
+            await callback.answer()
+            return
+
+        # Формируем список курсов с тестами
+        buttons = []
+        has_quizzes = False
+
+        for reg in active_registrations:
+            if reg['course_name'] in config.QUIZZES:
+                has_quizzes = True
+                buttons.append([InlineKeyboardButton(
+                    text=f"🎯 {reg['course_name']}",
+                    callback_data=f"quiz_course_{reg['course_name']}"
+                )])
+
+        if not has_quizzes:
+            await callback.message.edit_text(
+                "🎯 *Тесты и викторины*\n\n"
+                "Для ваших курсов пока нет доступных тестов.",
+                parse_mode="Markdown",
+                reply_markup=get_back_keyboard("show_cabinet")
+            )
+        else:
+            buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="show_cabinet")])
+
+            await callback.message.edit_text(
+                "🎯 *Выберите курс для прохождения теста:*",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+            )
+
+        await callback.answer()
+
+    except Exception as e:
+        logger.error(f"Ошибка в show_quiz_menu: {e}", exc_info=True)
+        await callback.message.edit_text(
+            "❌ Произошла ошибка при загрузке тестов",
+            reply_markup=get_cabinet_keyboard()
+        )
+        await callback.answer()
+
+
 def register_user_handlers(dp):
-    dp.include_router()
+    """Регистрация пользовательских обработчиков"""
+    dp.include_router(user_router)

@@ -4,14 +4,12 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 
 from states.admin_states import AdminStates
-from database import Database
-from helpers import is_admin
+from helpers import is_admin, get_db
 from config import Config
 
 logger = logging.getLogger(__name__)
-router = Router(name="admin_lesson_handlers")
+router = Router(name="admin_lesson_handlers")  # ✅ ИСПРАВЛЕНО: router вместо router_lessons
 config = Config()
-db = Database(config.DB_NAME)
 
 
 @router.callback_query(F.data == "add_lesson")
@@ -20,7 +18,9 @@ async def add_lesson_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         return
 
-    groups = db.get_active_groups()
+    db = get_db()
+    groups = db.groups.get_all_active()
+
     if not groups:
         from keyboards.admin_kb import get_lesson_management_keyboard
         await callback.message.edit_text(
@@ -57,19 +57,19 @@ async def select_lesson_group(callback: CallbackQuery, state: FSMContext):
 
     group_id = int(callback.data.replace("select_lesson_group_", ""))
 
-    groups = db.get_active_groups()
-    selected_group = next((g for g in groups if g['id'] == group_id), None)
+    db = get_db()
+    group = db.groups.get_by_id(group_id)
 
-    if not selected_group:
+    if not group:
         await callback.answer("❌ Группа не найдена.")
         return
 
-    await state.update_data(lesson_group_id=group_id, lesson_group_name=selected_group['name'])
+    await state.update_data(lesson_group_id=group_id, lesson_group_name=group['name'])
     await state.set_state(AdminStates.waiting_for_lesson_topic)
 
     from keyboards.admin_kb import get_cancel_keyboard
     await callback.message.edit_text(
-        f"👥 Группа: *{selected_group['name']}*\n\n"
+        f"👥 Группа: *{group['name']}*\n\n"
         "📝 Введите тему урока:",
         parse_mode="Markdown",
         reply_markup=get_cancel_keyboard()
@@ -87,7 +87,7 @@ async def add_lesson_topic_process(message: Message, state: FSMContext):
         await state.clear()
         from keyboards.admin_kb import get_lesson_management_keyboard
         await message.answer("❌ Добавление урока отменено.",
-                           reply_markup=get_lesson_management_keyboard())
+                             reply_markup=get_lesson_management_keyboard())
         return
 
     await state.update_data(lesson_topic=message.text)
@@ -110,7 +110,7 @@ async def add_lesson_date_process(message: Message, state: FSMContext):
         await state.clear()
         from keyboards.admin_kb import get_lesson_management_keyboard
         await message.answer("❌ Добавление урока отменено.",
-                           reply_markup=get_lesson_management_keyboard())
+                             reply_markup=get_lesson_management_keyboard())
         return
 
     # Валидация даты
@@ -127,11 +127,10 @@ async def add_lesson_date_process(message: Message, state: FSMContext):
 
     data = await state.get_data()
 
-    # Получаем ID преподавателя из группы
-    groups = db.get_all_groups()
-    selected_group = next((g for g in groups if g['id'] == data['lesson_group_id']), None)
+    db = get_db()
+    group = db.groups.get_by_id(data['lesson_group_id'])
 
-    if not selected_group or not selected_group['teacher_id']:
+    if not group or not group.get('teacher_id'):
         from keyboards.admin_kb import get_lesson_management_keyboard
         await message.answer(
             "❌ Ошибка: у группы нет назначенного преподавателя.",
@@ -141,9 +140,9 @@ async def add_lesson_date_process(message: Message, state: FSMContext):
         return
 
     # Сохраняем урок
-    success = db.add_lesson(
+    success = db.lessons.create(
         group_id=data['lesson_group_id'],
-        teacher_id=selected_group['teacher_id'],
+        teacher_id=group['teacher_id'],
         topic=data['lesson_topic'],
         lesson_date=message.text,
         duration_minutes=60
@@ -154,7 +153,7 @@ async def add_lesson_date_process(message: Message, state: FSMContext):
         await message.answer(
             f"✅ Урок *{data['lesson_topic']}* успешно добавлен!\n\n"
             f"👥 Группа: {data['lesson_group_name']}\n"
-            f"👨‍🏫 Преподаватель: {selected_group['teacher_name']}\n"
+            f"👨‍🏫 Преподаватель: {group.get('teacher_name', 'Не указан')}\n"
             f"📅 Дата: {message.text}",
             parse_mode="Markdown",
             reply_markup=get_lesson_management_keyboard()
@@ -162,7 +161,7 @@ async def add_lesson_date_process(message: Message, state: FSMContext):
     else:
         from keyboards.admin_kb import get_lesson_management_keyboard
         await message.answer(
-            f"❌ Ошибка при добавлении урока {data['lesson_topic']}.",
+            f"❌ Ошибка при добавлении урока.",
             reply_markup=get_lesson_management_keyboard()
         )
 
@@ -190,7 +189,25 @@ async def list_lessons(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
         return
 
-    lessons = db.get_all_lessons()
+    db = get_db()
+
+    # Получаем уроки через прямой SQL запрос (если метод get_all_lessons не работает)
+    try:
+        query = """
+                SELECT l.id, \
+                       l.topic, \
+                       l.lesson_date, \
+                       l.duration_minutes,
+                       g.name as group_name, \
+                       t.name as teacher_name
+                FROM lessons l
+                         LEFT JOIN groups g ON l.group_id = g.id
+                         LEFT JOIN teachers t ON l.teacher_id = t.id
+                ORDER BY l.lesson_date DESC LIMIT 20 \
+                """
+        lessons = db.execute_query(query)
+    except:
+        lessons = []
 
     if not lessons:
         from keyboards.admin_kb import get_lesson_management_keyboard
@@ -203,14 +220,14 @@ async def list_lessons(callback: CallbackQuery):
     lesson_list = "📖 *Список уроков:*\n\n"
 
     for i, lesson in enumerate(lessons, 1):
-        lesson_date = lesson['lesson_date'][:16]  # Обрезаем секунды
+        lesson_date = lesson['lesson_date'][:16] if lesson.get('lesson_date') else 'Не указана'
         lesson_info = (
             f"{i}. *{lesson['topic']}*\n"
             f"   🆔 ID: {lesson['id']}\n"
-            f"   👥 Группа: {lesson['group_name']}\n"
-            f"   👨‍🏫 Преподаватель: {lesson['teacher_name']}\n"
+            f"   👥 Группа: {lesson.get('group_name', 'Не указана')}\n"
+            f"   👨‍🏫 Преподаватель: {lesson.get('teacher_name', 'Не указан')}\n"
             f"   📅 Дата: {lesson_date}\n"
-            f"   ⏱️ Длительность: {lesson['duration_minutes']} мин\n"
+            f"   ⏱️ Длительность: {lesson.get('duration_minutes', 60)} мин\n"
         )
 
         lesson_list += lesson_info + "\n"

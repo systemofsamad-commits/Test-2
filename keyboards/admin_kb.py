@@ -94,7 +94,7 @@ def get_admin_students_menu():
     return keyboard
 
 
-def get_student_actions_keyboard(registration_id: int, current_status: str, student_name: str = ""):
+def get_student_actions_keyboard(registration_id: int, current_status: str):
     """Меню действий со студентом - улучшенное"""
     buttons = []
 
@@ -140,7 +140,7 @@ def get_student_actions_keyboard(registration_id: int, current_status: str, stud
 
 # ============ ПОДТВЕРЖДЕНИЯ ============
 
-def get_status_change_confirmation_keyboard(registration_id: int, new_status: str, old_status: str):
+def get_status_change_confirmation_keyboard(registration_id: int, new_status: str):
     """Клавиатура подтверждения смены статуса"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [

@@ -1,16 +1,17 @@
+"""
+Базовые обработчики админ-панели
+"""
 import logging
 
 from aiogram import Router, F
 from aiogram.types import CallbackQuery
 
 from config import Config
-from database import Database
-from helpers import is_admin
+from helpers import is_admin, get_db
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin_handlers_base")
 config = Config()
-db = Database(config.DB_NAME)
 
 
 # ============ БАЗОВАЯ АДМИН-ПАНЕЛЬ ============
@@ -110,7 +111,21 @@ async def admin_admins_menu(callback: CallbackQuery):
         await callback.answer("❌ Доступ запрещен")
         return
 
-    admins = db.get_all_admins()
+    # ✅ Получаем БД внутри функции, не на уровне модуля
+    db = get_db()
+
+    # Получаем админов через SQL запрос
+    query = """
+            SELECT user_id, username, full_name, created_at, is_active
+            FROM admins
+            ORDER BY created_at DESC \
+            """
+
+    try:
+        admins = db.execute_query(query)
+    except Exception as e:
+        logger.error(f"Error fetching admins: {e}")
+        admins = []
 
     if not admins:
         text = "📋 Список администраторов пуст"

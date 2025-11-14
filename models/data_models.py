@@ -49,17 +49,16 @@ def smart_parse_datetime(date_str: str) -> Optional[datetime]:
         "%H:%M",  # 14:30
     ]
 
-    # Пробуем каждый формат
     for fmt in formats:
         try:
-            dt = datetime.strptime(date_str, fmt)
+            parsed_dt = datetime.strptime(date_str, fmt)
 
             # Если распарсили только время, добавляем сегодняшнюю дату
             if fmt in ["%H:%M:%S", "%H:%M"]:
                 today = datetime.now().date()
-                dt = datetime.combine(today, dt.time())
+                parsed_dt = datetime.combine(today, parsed_dt.time())
 
-            return dt
+            return parsed_dt
 
         except ValueError:
             continue

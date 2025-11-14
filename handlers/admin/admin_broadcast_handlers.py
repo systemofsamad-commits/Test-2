@@ -6,14 +6,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from config import Config
-from database import Database
-from helpers import is_admin
+from helpers import is_admin, get_db
 from states.admin_states import AdminStates
 
 logger = logging.getLogger(__name__)
-router = Router(name="admin_broadcast_handlers")
+router = Router(name="admin_broadcast_handlers")  # ✅ ИСПРАВЛЕНО: router вместо router_broadcast
 config = Config()
-db = Database(config.DB_NAME)
 
 
 @router.callback_query(F.data == "start_broadcast")
@@ -68,10 +66,19 @@ async def process_broadcast_text(message: Message, state: FSMContext):
     group = data.get('broadcast_group')
     broadcast_text = message.text
 
-    # Получаем список студентов
-    students = []
+    db = get_db()
+    recipients = []
+
     if group == "all":
-        students = db.get_all_registrations()
+        # Получаем всех уникальных пользователей
+        query = """
+                SELECT DISTINCT u.telegram_id, u.full_name
+                FROM registrations r
+                         JOIN users u ON r.user_id = u.id
+                WHERE u.telegram_id IS NOT NULL \
+                """
+        users = db.execute_query(query)
+        recipients = [{'telegram_id': u['telegram_id'], 'name': u.get('full_name', 'Пользователь')} for u in users]
     else:
         # Ищем статус по названию
         status = None
@@ -79,10 +86,13 @@ async def process_broadcast_text(message: Message, state: FSMContext):
             if value == group:
                 status = key
                 break
-        if status:
-            students = db.get_students_by_status(status)
 
-    if not students:
+        if status:
+            registrations = db.registrations.get_by_status(status)
+            recipients = [{'telegram_id': r['telegram_id'], 'name': r['name']} for r in registrations if
+                          r.get('telegram_id')]
+
+    if not recipients:
         from keyboards.admin_kb import get_admin_main_keyboard
         await message.answer(
             "❌ Нет студентов в выбранной группе.",
@@ -93,20 +103,21 @@ async def process_broadcast_text(message: Message, state: FSMContext):
 
     from keyboards.admin_kb import get_admin_main_keyboard
     await message.answer(
-        f"📤 Начинаю рассылку для {len(students)} студентов...",
+        f"📤 Начинаю рассылку для {len(recipients)} студентов...",
         reply_markup=get_admin_main_keyboard()
     )
 
     success_count = 0
     fail_count = 0
 
-    for student in students:
+    for recipient in recipients:
         try:
-            await message.bot.send_message(student.user_id, f"📢 {broadcast_text}")
+            telegram_id = recipient['telegram_id']
+            await message.bot.send_message(telegram_id, f"📢 {broadcast_text}")
             success_count += 1
             await asyncio.sleep(0.05)  # Задержка между сообщениями
         except Exception as e:
-            logger.error(f"Ошибка отправки сообщения пользователю {student.user_id}: {e}")
+            logger.error(f"Ошибка отправки сообщения пользователю {recipient.get('name', 'Unknown')}: {e}")
             fail_count += 1
 
     report_text = (

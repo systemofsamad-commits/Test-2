@@ -1,17 +1,15 @@
 import logging
-from aiogram import Router, F
-from aiogram.types import CallbackQuery, Message
-from aiogram.fsm.context import FSMContext
 
-from states.admin_states import AdminStates
-from database import Database
-from helpers import is_admin
+from aiogram import Router, F
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery
+
 from config import Config
+from helpers import is_admin, get_db  # ✅ ИЗМЕНЕНО: добавлен get_db
 
 logger = logging.getLogger(__name__)
-router = Router(name="admin_student_handlers")
+router = Router(name="admin_status_handlers")  # ✅ ИЗМЕНЕНО: исправлено имя роутера
 config = Config()
-db = Database(config.DB_NAME)
 
 
 @router.callback_query(F.data.startswith("admin_quick_"))
@@ -26,7 +24,7 @@ async def quick_status_change(callback: CallbackQuery, state: FSMContext):
         logger.info(f"Quick status change data: {callback_data}")
 
         # Убираем префикс "admin_quick_"
-        data_without_prefix = callback_data.replace("admin_quick_", "")
+        data_without_prefix: str = callback_data.replace("admin_quick_", "")
 
         # Разделяем на части по последнему подчёркиванию
         last_underscore_index = data_without_prefix.rfind('_')
@@ -45,9 +43,11 @@ async def quick_status_change(callback: CallbackQuery, state: FSMContext):
 
         logger.info(f"Changing status for student {registration_id} to {new_status}")
 
-        # Получаем информацию о студенте
-        student = db.get_student_by_id(registration_id)
-        if not student:
+        # ✅ ИЗМЕНЕНО: Используем новый репозиторий
+        db = get_db()
+        reg = db.registrations.get_by_id(registration_id)
+
+        if not reg:
             await callback.answer("❌ Студент не найден")
             return
 
@@ -55,8 +55,8 @@ async def quick_status_change(callback: CallbackQuery, state: FSMContext):
         await state.update_data(
             registration_id=registration_id,
             new_status=new_status,
-            student_name=student.name,
-            current_status=student.status
+            student_name=reg['name'],
+            current_status=reg['status_code']
         )
 
         status_names = {
@@ -68,21 +68,21 @@ async def quick_status_change(callback: CallbackQuery, state: FSMContext):
             'active': '🟢 Активные'
         }
 
-        current_status_name = config.STATUSES.get(student.status, student.status)
+        current_status_name = config.STATUSES.get(reg['status_code'], reg['status_code'])
         new_status_name = status_names.get(new_status, new_status)
 
         # Показываем подтверждение
         from keyboards.admin_kb import get_status_change_confirmation_keyboard
         await callback.message.edit_text(
             f"🔄 *Смена статуса студента*\n\n"
-            f"👤 *Студент:* {student.name}\n"
-            f"📞 Телефон: {student.phone}\n"
-            f"📚 Курс: {student.course}\n\n"
+            f"👤 *Студент:* {reg['name']}\n"
+            f"📞 Телефон: {reg['phone']}\n"
+            f"📚 Курс: {reg['course_name']}\n\n"
             f"📊 *Текущий статус:* {current_status_name}\n"
             f"🎯 *Новый статус:* {new_status_name}\n\n"
             f"✅ *Подтвердите изменение статуса:*",
             parse_mode="Markdown",
-            reply_markup=get_status_change_confirmation_keyboard(registration_id, new_status, student.status)
+            reply_markup=get_status_change_confirmation_keyboard(registration_id, new_status)
         )
 
         await callback.answer()
@@ -93,7 +93,7 @@ async def quick_status_change(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("admin_confirm_"))
-async def confirm_status_change(callback: CallbackQuery, state: FSMContext):
+async def confirm_status_change(callback: CallbackQuery):
     """Подтверждение смены статуса"""
     if not is_admin(callback.from_user.id):
         await callback.answer("❌ Доступ запрещён")
@@ -122,12 +122,13 @@ async def confirm_status_change(callback: CallbackQuery, state: FSMContext):
             await callback.answer("❌ Неверный ID студента")
             return
 
-        # Обновляем статус в базе данных
-        success = db.update_status(registration_id, new_status)
+        # ✅ ИЗМЕНЕНО: Используем новый репозиторий
+        db = get_db()
+        success = db.registrations.update_status(registration_id, new_status)
 
         if success:
             # Получаем обновлённые данные студента
-            student = db.get_student_by_id(registration_id)
+            reg = db.registrations.get_by_id(registration_id)
 
             status_names = {
                 'trial': '🟡 Пробный урок',
@@ -143,25 +144,25 @@ async def confirm_status_change(callback: CallbackQuery, state: FSMContext):
             from keyboards.admin_kb import get_student_actions_keyboard
             await callback.message.edit_text(
                 f"✅ *Статус успешно обновлён!*\n\n"
-                f"👤 *Студент:* {student.name}\n"
-                f"📞 Телефон: {student.phone}\n"
-                f"📚 Курс: {student.course}\n\n"
+                f"👤 *Студент:* {reg['name']}\n"
+                f"📞 Телефон: {reg['phone']}\n"
+                f"📚 Курс: {reg['course_name']}\n\n"
                 f"🎯 *Новый статус:* {new_status_name}\n\n"
                 f"📊 Студент перемещён в соответствующую категорию.",
                 parse_mode="Markdown",
-                reply_markup=get_student_actions_keyboard(registration_id, new_status, student.name)
+                reply_markup=get_student_actions_keyboard(registration_id, new_status)
             )
 
-            logger.info(f"✅ Статус студента {student.name} (ID: {registration_id}) изменён на {new_status}")
+            logger.info(f"✅ Статус студента {reg['name']} (ID: {registration_id}) изменён на {new_status}")
 
         else:
-            student = db.get_student_by_id(registration_id)
+            reg = db.registrations.get_by_id(registration_id)
             from keyboards.admin_kb import get_student_actions_keyboard
             await callback.message.edit_text(
                 "❌ *Ошибка при обновлении статуса*\n\n"
                 "Попробуйте ещё раз или обратитесь к разработчику.",
                 parse_mode="Markdown",
-                reply_markup=get_student_actions_keyboard(registration_id, student.status, student.name)
+                reply_markup=get_student_actions_keyboard(registration_id, reg['status_code'])
             )
 
     except Exception as e:
@@ -178,16 +179,19 @@ async def cancel_status_change(callback: CallbackQuery):
 
     try:
         registration_id = int(callback.data.replace("admin_cancel_", ""))
-        student = db.get_student_by_id(registration_id)
 
-        if student:
+        # ✅ ИЗМЕНЕНО: Используем новый репозиторий
+        db = get_db()
+        reg = db.registrations.get_by_id(registration_id)
+
+        if reg:
             from keyboards.admin_kb import get_student_actions_keyboard
             await callback.message.edit_text(
                 f"❌ *Смена статуса отменена*\n\n"
-                f"👤 *Студент:* {student.name}\n"
+                f"👤 *Студент:* {reg['name']}\n"
                 f"📊 Статус остался без изменений.",
                 parse_mode="Markdown",
-                reply_markup=get_student_actions_keyboard(registration_id, student.status, student.name)
+                reply_markup=get_student_actions_keyboard(registration_id, reg['status_code'])
             )
         else:
             await callback.answer("❌ Студент не найден")
@@ -206,27 +210,27 @@ async def back_to_student(callback: CallbackQuery):
 
     try:
         registration_id = int(callback.data.replace("admin_back_", ""))
-        student = db.get_student_by_id(registration_id)
 
-        if student:
-            status_text = config.STATUSES.get(student.status, student.status)
+        # ✅ ИЗМЕНЕНО: Используем новый репозиторий
+        db = get_db()
+        reg = db.registrations.get_by_id(registration_id)
+
+        if reg:
+            status_text = config.STATUSES.get(reg['status_code'], reg['status_code'])
             info_text = (
                 f"📋 *Карточка студента:*\n\n"
-                f"👤 Имя: {student.name}\n"
-                f"📞 Телефон: {student.phone}\n"
-                f"🎯 Курс: {student.course}\n"
+                f"👤 Имя: {reg['name']}\n"
+                f"📞 Телефон: {reg['phone']}\n"
+                f"🎯 Курс: {reg['course_name']}\n"
                 f"📊 Статус: {status_text}\n"
-                f"🎓 Тип обучения: {student.training_type}\n"
-                f"⏰ Расписание: {student.schedule}\n"
-                f"💰 Цена: {student.price}\n"
-                f"🆔 ID: {student.id}\n"
+                f"🆔 ID: {reg['id']}\n"
             )
 
             from keyboards.admin_kb import get_student_actions_keyboard
             await callback.message.edit_text(
                 info_text,
                 parse_mode="Markdown",
-                reply_markup=get_student_actions_keyboard(registration_id, student.status, student.name)
+                reply_markup=get_student_actions_keyboard(registration_id, reg['status_code'])
             )
         else:
             await callback.answer("❌ Студент не найден")

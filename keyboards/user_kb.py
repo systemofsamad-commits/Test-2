@@ -11,7 +11,7 @@ def get_main_keyboard():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 Новая запись", callback_data="new_registration")],
         [
-            InlineKeyboardButton(text="👤 Мой кабинет", callback_data="my_cabinet"),
+            InlineKeyboardButton(text="👤 Мой кабинет", callback_data="show_cabinet"),
             InlineKeyboardButton(text="📚 Курсы", callback_data="show_courses")
         ],
         [
@@ -111,24 +111,30 @@ def get_schedule_keyboard():
 
 # ============ ЛИЧНЫЙ КАБИНЕТ ============
 
-def get_cabinet_keyboard():
+def get_cabinet_keyboard(has_registrations: bool = True):
     """Меню личного кабинета - улучшенное"""
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Мои записи", callback_data="my_registrations")],
-        [
-            InlineKeyboardButton(text="📚 Материалы", callback_data="my_materials"),
-            InlineKeyboardButton(text="📊 Прогресс", callback_data="my_progress")
-        ],
-        [
-            InlineKeyboardButton(text="🎯 Тесты", callback_data="take_quiz"),
-            InlineKeyboardButton(text="📅 Расписание", callback_data="my_schedule")
-        ],
-        [InlineKeyboardButton(text="◀️ Главное меню", callback_data="back_to_main")]
-    ])
+    if has_registrations:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📋 Мои записи", callback_data="my_registrations")],
+            [
+                InlineKeyboardButton(text="📚 Материалы", callback_data="show_materials"),
+                InlineKeyboardButton(text="📊 Прогресс", callback_data="show_progress")
+            ],
+            [
+                InlineKeyboardButton(text="🎯 Тесты", callback_data="start_quiz"),
+                InlineKeyboardButton(text="📅 Расписание", callback_data="my_schedule")
+            ],
+            [InlineKeyboardButton(text="◀️ Главное меню", callback_data="back_to_main")]
+        ])
+    else:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📝 Новая запись", callback_data="new_registration")],
+            [InlineKeyboardButton(text="◀️ Главное меню", callback_data="back_to_main")]
+        ])
     return keyboard
 
 
-def get_registrations_keyboard(registrations: list):
+def get_registrations_keyboard(registrations: list) -> InlineKeyboardMarkup:
     """Клавиатура со списком регистраций"""
     buttons = []
 
@@ -162,7 +168,7 @@ def get_registrations_keyboard(registrations: list):
             callback_data="new_registration"
         )])
 
-    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="my_cabinet")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="show_cabinet")])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -196,8 +202,8 @@ def get_materials_keyboard(course: str):
             )])
 
     buttons.extend([
-        [InlineKeyboardButton(text="🔄 Обновить", callback_data="my_materials")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="my_cabinet")]
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="show_materials")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="show_cabinet")]
     ])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -205,24 +211,35 @@ def get_materials_keyboard(course: str):
 
 # ============ ТЕСТЫ/ВИКТОРИНЫ ============
 
-def get_quiz_keyboard(course: str):
-    """Клавиатура выбора теста"""
+def get_quiz_keyboard(question_index: int, options: list, course: str = None):
+    """Клавиатура ответов на вопрос теста"""
     buttons = []
 
-    if course in config.QUIZZES:
-        quizzes = config.QUIZZES[course]
+    # Варианты ответов
+    for idx, option in enumerate(options):
+        buttons.append([InlineKeyboardButton(
+            text=f"{chr(65 + idx)}. {option}",
+            callback_data=f"quiz_answer_{course}_{question_index}_{idx}" if course else f"quiz_{question_index}_{idx}"
+        )])
 
-        # Тесты по номерам
-        for idx in range(len(quizzes)):
-            buttons.append([InlineKeyboardButton(
-                text=f"📝 Вопрос {idx + 1}",
-                callback_data=f"quiz_{course}_{idx}"
-            )])
-
-    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="my_cabinet")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="start_quiz")])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def get_quiz_question_keyboard(question_index: int, options: list):
+    """Клавиатура для конкретного вопроса теста"""
+    buttons = []
+
+    # Варианты ответов
+    for idx, option in enumerate(options):
+        buttons.append([InlineKeyboardButton(
+            text=f"{chr(65 + idx)}. {option}",
+            callback_data=f"quiz_{question_index}_{idx}"
+        )])
+
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_quiz")])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_quiz_answer_keyboard(course: str, question_idx: int, options: list):
     """Клавиатура ответов на вопрос теста"""
@@ -235,7 +252,7 @@ def get_quiz_answer_keyboard(course: str, question_idx: int, options: list):
             callback_data=f"quiz_answer_{course}_{question_idx}_{idx}"
         )])
 
-    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="take_quiz")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="start_quiz")])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -244,8 +261,8 @@ def get_quiz_results_keyboard():
     """Клавиатура результатов теста"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🔄 Пройти снова", callback_data="take_quiz"),
-            InlineKeyboardButton(text="📚 Материалы", callback_data="my_materials")
+            InlineKeyboardButton(text="🔄 Пройти снова", callback_data="start_quiz"),
+            InlineKeyboardButton(text="📚 Материалы", callback_data="show_materials")
         ],
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")]
     ])
@@ -317,7 +334,7 @@ def get_progress_keyboard():
             InlineKeyboardButton(text="🎯 Достижения", callback_data="progress_achievements"),
             InlineKeyboardButton(text="📅 История", callback_data="progress_history")
         ],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="my_cabinet")]
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="show_cabinet")]
     ])
     return keyboard
 
