@@ -4,14 +4,12 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 
 from states.admin_states import AdminStates
-from helpers import is_admin
-from helpers import get_db
+from helpers import is_admin, get_db
 from config import Config
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin_management_handlers")
 config = Config()
-db = get_db()
 
 
 # ============ УПРАВЛЕНИЕ ПРЕПОДАВАТЕЛЯМИ ============
@@ -97,12 +95,18 @@ async def skip_teacher_email(callback: CallbackQuery, state: FSMContext):
 
     data = await state.get_data()
 
-    # Сохраняем преподавателя без email
-    success = db.add_teacher(
-        name=data['teacher_name'],
-        phone=data['teacher_phone'],
-        email=None
-    )
+    # ✅ ИСПРАВЛЕНО: Прямой SQL INSERT
+    db = get_db()
+    try:
+        query = """
+            INSERT INTO teachers (name, phone, email, is_active, created_at)
+            VALUES (?, ?, ?, 1, datetime('now'))
+        """
+        teacher_id = db.execute_insert(query, (data['teacher_name'], data['teacher_phone'], None))
+        success = teacher_id is not None
+    except Exception as e:
+        logger.error(f"Error adding teacher: {e}", exc_info=True)
+        success = False
 
     if success:
         from keyboards.admin_kb import get_admin_teachers_menu
@@ -137,12 +141,18 @@ async def add_teacher_email_process(message: Message, state: FSMContext):
 
     data = await state.get_data()
 
-    # Сохраняем преподавателя с email
-    success = db.add_teacher(
-        name=data['teacher_name'],
-        phone=data['teacher_phone'],
-        email=message.text
-    )
+    # ✅ ИСПРАВЛЕНО: Прямой SQL INSERT
+    db = get_db()
+    try:
+        query = """
+            INSERT INTO teachers (name, phone, email, is_active, created_at)
+            VALUES (?, ?, ?, 1, datetime('now'))
+        """
+        teacher_id = db.execute_insert(query, (data['teacher_name'], data['teacher_phone'], message.text))
+        success = teacher_id is not None
+    except Exception as e:
+        logger.error(f"Error adding teacher: {e}", exc_info=True)
+        success = False
 
     if success:
         from keyboards.admin_kb import get_admin_teachers_menu
@@ -210,8 +220,16 @@ async def add_group_name_process(message: Message, state: FSMContext):
 
     await state.update_data(group_name=message.text)
 
-    # Получаем список курсов для выбора
-    courses = db.get_active_courses()
+    # ✅ ИСПРАВЛЕНО: Прямой SQL SELECT
+    db = get_db()
+    query = """
+        SELECT id, name, description
+        FROM courses
+        WHERE is_active = 1
+        ORDER BY name
+    """
+    courses = db.execute_query(query)
+
     if not courses:
         from keyboards.admin_kb import get_group_management_keyboard
         await message.answer(
@@ -249,8 +267,15 @@ async def select_group_course(callback: CallbackQuery, state: FSMContext):
 
     course_id = int(callback.data.replace("select_course_", ""))
 
-    courses = db.get_active_courses()
-    selected_course = next((c for c in courses if c['id'] == course_id), None)
+    # ✅ ИСПРАВЛЕНО: Прямой SQL SELECT
+    db = get_db()
+    query = """
+        SELECT id, name, description
+        FROM courses
+        WHERE id = ? AND is_active = 1
+    """
+    results = db.execute_query(query, (course_id,))
+    selected_course = results[0] if results else None
 
     if not selected_course:
         await callback.answer("❌ Курс не найден.")
@@ -258,8 +283,15 @@ async def select_group_course(callback: CallbackQuery, state: FSMContext):
 
     await state.update_data(group_course_id=course_id, group_course_name=selected_course['name'])
 
-    # Получаем список преподавателей для выбора
-    teachers = db.get_active_teachers()
+    # ✅ ИСПРАВЛЕНО: Прямой SQL SELECT для преподавателей
+    query = """
+        SELECT id, name, phone, email
+        FROM teachers
+        WHERE is_active = 1
+        ORDER BY name
+    """
+    teachers = db.execute_query(query)
+
     if not teachers:
         from keyboards.admin_kb import get_group_management_keyboard
         await callback.message.edit_text(
@@ -300,8 +332,15 @@ async def select_group_teacher(callback: CallbackQuery, state: FSMContext):
 
     teacher_id = int(callback.data.replace("select_teacher_", ""))
 
-    teachers = db.get_active_teachers()
-    selected_teacher = next((t for t in teachers if t['id'] == teacher_id), None)
+    # ✅ ИСПРАВЛЕНО: Прямой SQL SELECT
+    db = get_db()
+    query = """
+        SELECT id, name, phone, email
+        FROM teachers
+        WHERE id = ? AND is_active = 1
+    """
+    results = db.execute_query(query, (teacher_id,))
+    selected_teacher = results[0] if results else None
 
     if not selected_teacher:
         await callback.answer("❌ Преподаватель не найден.")
@@ -309,12 +348,17 @@ async def select_group_teacher(callback: CallbackQuery, state: FSMContext):
 
     data = await state.get_data()
 
-    # Сохраняем группу
-    success = db.add_group(
-        name=data['group_name'],
-        course_id=data['group_course_id'],
-        teacher_id=teacher_id
-    )
+    # ✅ ИСПРАВЛЕНО: Прямой SQL INSERT для группы
+    try:
+        query = """
+            INSERT INTO groups (name, course_id, teacher_id, is_active, created_at)
+            VALUES (?, ?, ?, 1, datetime('now'))
+        """
+        group_id = db.execute_insert(query, (data['group_name'], data['group_course_id'], teacher_id))
+        success = group_id is not None
+    except Exception as e:
+        logger.error(f"Error adding group: {e}", exc_info=True)
+        success = False
 
     if success:
         from keyboards.admin_kb import get_group_management_keyboard
@@ -403,11 +447,18 @@ async def skip_course_description(callback: CallbackQuery, state: FSMContext):
 
     data = await state.get_data()
 
-    # Сохраняем курс без описания
-    success = db.add_course(
-        name=data['course_name'],
-        description=None
-    )
+    # ✅ ИСПРАВЛЕНО: Прямой SQL INSERT
+    db = get_db()
+    try:
+        query = """
+            INSERT INTO courses (name, description, is_active, created_at)
+            VALUES (?, ?, 1, datetime('now'))
+        """
+        course_id = db.execute_insert(query, (data['course_name'], None))
+        success = course_id is not None
+    except Exception as e:
+        logger.error(f"Error adding course: {e}", exc_info=True)
+        success = False
 
     if success:
         from keyboards.admin_kb import get_admin_courses_menu
@@ -442,11 +493,18 @@ async def add_course_description_process(message: Message, state: FSMContext):
 
     data = await state.get_data()
 
-    # Сохраняем курс с описанием
-    success = db.add_course(
-        name=data['course_name'],
-        description=message.text
-    )
+    # ✅ ИСПРАВЛЕНО: Прямой SQL INSERT
+    db = get_db()
+    try:
+        query = """
+            INSERT INTO courses (name, description, is_active, created_at)
+            VALUES (?, ?, 1, datetime('now'))
+        """
+        course_id = db.execute_insert(query, (data['course_name'], message.text))
+        success = course_id is not None
+    except Exception as e:
+        logger.error(f"Error adding course: {e}", exc_info=True)
+        success = False
 
     if success:
         from keyboards.admin_kb import get_admin_courses_menu

@@ -10,7 +10,7 @@ from helpers import is_admin, get_db
 from states.admin_states import AdminStates
 
 logger = logging.getLogger(__name__)
-router = Router(name="admin_broadcast_handlers")  # ✅ ИСПРАВЛЕНО: router вместо router_broadcast
+router = Router(name="admin_broadcast_handlers")
 config = Config()
 
 
@@ -70,13 +70,13 @@ async def process_broadcast_text(message: Message, state: FSMContext):
     recipients = []
 
     if group == "all":
-        # Получаем всех уникальных пользователей
+        # ✅ ИСПРАВЛЕНО: Прямой SQL запрос для получения всех пользователей
         query = """
-                SELECT DISTINCT u.telegram_id, u.full_name
-                FROM registrations r
-                         JOIN users u ON r.user_id = u.id
-                WHERE u.telegram_id IS NOT NULL \
-                """
+            SELECT DISTINCT u.telegram_id, u.full_name
+            FROM registrations r
+            JOIN users u ON r.user_id = u.id
+            WHERE u.telegram_id IS NOT NULL
+        """
         users = db.execute_query(query)
         recipients = [{'telegram_id': u['telegram_id'], 'name': u.get('full_name', 'Пользователь')} for u in users]
     else:
@@ -88,7 +88,14 @@ async def process_broadcast_text(message: Message, state: FSMContext):
                 break
 
         if status:
-            registrations = db.registrations.get_by_status(status)
+            # ✅ ИСПРАВЛЕНО: Прямой SQL запрос с JOIN
+            query = """
+                SELECT r.*, u.telegram_id, u.full_name as name
+                FROM registrations r
+                JOIN users u ON r.user_id = u.id
+                WHERE r.status_code = ? AND u.telegram_id IS NOT NULL
+            """
+            registrations = db.execute_query(query, (status,))
             recipients = [{'telegram_id': r['telegram_id'], 'name': r['name']} for r in registrations if
                           r.get('telegram_id')]
 

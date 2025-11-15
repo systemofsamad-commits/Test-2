@@ -5,10 +5,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
 from config import Config
-from helpers import is_admin, get_db  # ✅ ИЗМЕНЕНО: добавлен get_db
+from helpers import is_admin, get_db
 
 logger = logging.getLogger(__name__)
-router = Router(name="admin_status_handlers")  # ✅ ИЗМЕНЕНО: исправлено имя роутера
+router = Router(name="admin_status_handlers")
 config = Config()
 
 
@@ -43,9 +43,18 @@ async def quick_status_change(callback: CallbackQuery, state: FSMContext):
 
         logger.info(f"Changing status for student {registration_id} to {new_status}")
 
-        # ✅ ИЗМЕНЕНО: Используем новый репозиторий
+        # ✅ ИСПРАВЛЕНО: Прямой SQL SELECT
         db = get_db()
-        reg = db.registrations.get_by_id(registration_id)
+        query = """
+            SELECT r.id, r.status_code,
+                   r.full_name as name, r.phone,
+                   c.name as course_name
+            FROM registrations r
+            LEFT JOIN courses c ON r.course_id = c.id
+            WHERE r.id = ?
+        """
+        results = db.execute_query(query, (registration_id,))
+        reg = results[0] if results else None
 
         if not reg:
             await callback.answer("❌ Студент не найден")
@@ -76,8 +85,8 @@ async def quick_status_change(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text(
             f"🔄 *Смена статуса студента*\n\n"
             f"👤 *Студент:* {reg['name']}\n"
-            f"📞 Телефон: {reg['phone']}\n"
-            f"📚 Курс: {reg['course_name']}\n\n"
+            f"📞 Телефон: {reg.get('phone', 'Не указан')}\n"
+            f"📚 Курс: {reg.get('course_name', 'Не указан')}\n\n"
             f"📊 *Текущий статус:* {current_status_name}\n"
             f"🎯 *Новый статус:* {new_status_name}\n\n"
             f"✅ *Подтвердите изменение статуса:*",
@@ -88,7 +97,7 @@ async def quick_status_change(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
 
     except Exception as e:
-        logger.error(f"Error in quick_status_change: {e}")
+        logger.error(f"Error in quick_status_change: {e}", exc_info=True)
         await callback.answer("❌ Произошла ошибка")
 
 
@@ -122,13 +131,37 @@ async def confirm_status_change(callback: CallbackQuery):
             await callback.answer("❌ Неверный ID студента")
             return
 
-        # ✅ ИЗМЕНЕНО: Используем новый репозиторий
+        # ✅ ИСПРАВЛЕНО: Прямой SQL UPDATE
         db = get_db()
-        success = db.registrations.update_status(registration_id, new_status)
+        try:
+            query = """
+                UPDATE registrations
+                SET status_code = ?,
+                    updated_at = datetime('now')
+                WHERE id = ?
+            """
+            db.execute_update(query, (new_status, registration_id))
+            success = True
+        except Exception as e:
+            logger.error(f"Error updating status: {e}", exc_info=True)
+            success = False
 
         if success:
-            # Получаем обновлённые данные студента
-            reg = db.registrations.get_by_id(registration_id)
+            # ✅ ИСПРАВЛЕНО: Прямой SQL SELECT для получения обновлённых данных
+            query = """
+                SELECT r.id, r.status_code,
+                       r.full_name as name, r.phone,
+                       c.name as course_name
+                FROM registrations r
+                LEFT JOIN courses c ON r.course_id = c.id
+                WHERE r.id = ?
+            """
+            results = db.execute_query(query, (registration_id,))
+            reg = results[0] if results else None
+
+            if not reg:
+                await callback.answer("❌ Студент не найден")
+                return
 
             status_names = {
                 'trial': '🟡 Пробный урок',
@@ -145,8 +178,8 @@ async def confirm_status_change(callback: CallbackQuery):
             await callback.message.edit_text(
                 f"✅ *Статус успешно обновлён!*\n\n"
                 f"👤 *Студент:* {reg['name']}\n"
-                f"📞 Телефон: {reg['phone']}\n"
-                f"📚 Курс: {reg['course_name']}\n\n"
+                f"📞 Телефон: {reg.get('phone', 'Не указан')}\n"
+                f"📚 Курс: {reg.get('course_name', 'Не указан')}\n\n"
                 f"🎯 *Новый статус:* {new_status_name}\n\n"
                 f"📊 Студент перемещён в соответствующую категорию.",
                 parse_mode="Markdown",
@@ -156,17 +189,29 @@ async def confirm_status_change(callback: CallbackQuery):
             logger.info(f"✅ Статус студента {reg['name']} (ID: {registration_id}) изменён на {new_status}")
 
         else:
-            reg = db.registrations.get_by_id(registration_id)
-            from keyboards.admin_kb import get_student_actions_keyboard
-            await callback.message.edit_text(
-                "❌ *Ошибка при обновлении статуса*\n\n"
-                "Попробуйте ещё раз или обратитесь к разработчику.",
-                parse_mode="Markdown",
-                reply_markup=get_student_actions_keyboard(registration_id, reg['status_code'])
-            )
+            # ✅ ИСПРАВЛЕНО: Прямой SQL SELECT
+            query = """
+                SELECT r.id, r.status_code,
+                       r.full_name as name, r.phone,
+                       c.name as course_name
+                FROM registrations r
+                LEFT JOIN courses c ON r.course_id = c.id
+                WHERE r.id = ?
+            """
+            results = db.execute_query(query, (registration_id,))
+            reg = results[0] if results else None
+
+            if reg:
+                from keyboards.admin_kb import get_student_actions_keyboard
+                await callback.message.edit_text(
+                    "❌ *Ошибка при обновлении статуса*\n\n"
+                    "Попробуйте ещё раз или обратитесь к разработчику.",
+                    parse_mode="Markdown",
+                    reply_markup=get_student_actions_keyboard(registration_id, reg['status_code'])
+                )
 
     except Exception as e:
-        logger.error(f"Error in confirm_status_change: {e}")
+        logger.error(f"Error in confirm_status_change: {e}", exc_info=True)
         await callback.answer("❌ Произошла ошибка")
 
 
@@ -180,9 +225,18 @@ async def cancel_status_change(callback: CallbackQuery):
     try:
         registration_id = int(callback.data.replace("admin_cancel_", ""))
 
-        # ✅ ИЗМЕНЕНО: Используем новый репозиторий
+        # ✅ ИСПРАВЛЕНО: Прямой SQL SELECT
         db = get_db()
-        reg = db.registrations.get_by_id(registration_id)
+        query = """
+            SELECT r.id, r.status_code,
+                   r.full_name as name, r.phone,
+                   c.name as course_name
+            FROM registrations r
+            LEFT JOIN courses c ON r.course_id = c.id
+            WHERE r.id = ?
+        """
+        results = db.execute_query(query, (registration_id,))
+        reg = results[0] if results else None
 
         if reg:
             from keyboards.admin_kb import get_student_actions_keyboard
@@ -197,7 +251,7 @@ async def cancel_status_change(callback: CallbackQuery):
             await callback.answer("❌ Студент не найден")
 
     except Exception as e:
-        logger.error(f"Error in cancel_status_change: {e}")
+        logger.error(f"Error in cancel_status_change: {e}", exc_info=True)
         await callback.answer("❌ Произошла ошибка")
 
 
@@ -211,17 +265,26 @@ async def back_to_student(callback: CallbackQuery):
     try:
         registration_id = int(callback.data.replace("admin_back_", ""))
 
-        # ✅ ИЗМЕНЕНО: Используем новый репозиторий
+        # ✅ ИСПРАВЛЕНО: Прямой SQL SELECT
         db = get_db()
-        reg = db.registrations.get_by_id(registration_id)
+        query = """
+            SELECT r.id, r.status_code,
+                   r.full_name as name, r.phone,
+                   c.name as course_name
+            FROM registrations r
+            LEFT JOIN courses c ON r.course_id = c.id
+            WHERE r.id = ?
+        """
+        results = db.execute_query(query, (registration_id,))
+        reg = results[0] if results else None
 
         if reg:
             status_text = config.STATUSES.get(reg['status_code'], reg['status_code'])
             info_text = (
                 f"📋 *Карточка студента:*\n\n"
                 f"👤 Имя: {reg['name']}\n"
-                f"📞 Телефон: {reg['phone']}\n"
-                f"🎯 Курс: {reg['course_name']}\n"
+                f"📞 Телефон: {reg.get('phone', 'Не указан')}\n"
+                f"🎯 Курс: {reg.get('course_name', 'Не указан')}\n"
                 f"📊 Статус: {status_text}\n"
                 f"🆔 ID: {reg['id']}\n"
             )
@@ -236,5 +299,5 @@ async def back_to_student(callback: CallbackQuery):
             await callback.answer("❌ Студент не найден")
 
     except Exception as e:
-        logger.error(f"Error in back_to_student: {e}")
+        logger.error(f"Error in back_to_student: {e}", exc_info=True)
         await callback.answer("❌ Произошла ошибка")

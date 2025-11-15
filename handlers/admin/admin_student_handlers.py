@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from config import Config
-from helpers import is_admin, get_db  # ✅ ИЗМЕНЕНО: добавлен get_db
+from helpers import is_admin, get_db
 from states.admin_states import AdminStates
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ async def view_students_by_status(callback: CallbackQuery):
 
     status = callback.data.replace("view_students_", "")
 
-    # ✅ ИЗМЕНЕНО: Упрощенный маппинг статусов
+    # Маппинг статусов
     status_map = {
         'active': 'active',
         'trial': 'trial',
@@ -36,9 +36,27 @@ async def view_students_by_status(callback: CallbackQuery):
 
     db_status = status_map.get(status, status)
 
-    # ✅ ИЗМЕНЕНО: Используем новый репозиторий
+    # ✅ ИСПРАВЛЕНО: Используем прямой SQL с JOIN для получения course_name
     db = get_db()
-    registrations = db.registrations.get_by_status(db_status)
+    query = """
+            SELECT r.id, \
+                   r.user_id, \
+                   r.status_code, \
+                   r.created_at, \
+                   r.updated_at, \
+                   r.full_name as name, \
+                   r.phone, \
+                   c.name      as course_name, \
+                   tt.name     as training_type_name, \
+                   s.name      as schedule_name
+            FROM registrations r
+                     LEFT JOIN courses c ON r.course_id = c.id
+                     LEFT JOIN training_types tt ON r.training_type_id = tt.id
+                     LEFT JOIN schedules s ON r.schedule_id = s.id
+            WHERE r.status_code = ?
+            ORDER BY r.created_at DESC \
+            """
+    registrations = db.execute_query(query, (db_status,))
 
     status_names = {
         'active': '🟢 Активные',
@@ -65,13 +83,14 @@ async def view_students_by_status(callback: CallbackQuery):
     reg = registrations[0]
     status_text = config.STATUSES.get(reg['status_code'], reg['status_code'])
 
+    # ✅ ИСПРАВЛЕНО: Используем .get() для безопасного доступа
     info_text = (
         f"📋 *Студенты: {status_name}*\n"
         f"Всего: {len(registrations)}\n\n"
         f"👤 *Студент 1/{len(registrations)}*\n\n"
-        f"📛 Имя: {reg['name']}\n"
-        f"📞 Телефон: {reg['phone']}\n"
-        f"🎯 Курс: {reg['course_name']}\n"
+        f"📛 Имя: {reg.get('name', 'Не указано')}\n"
+        f"📞 Телефон: {reg.get('phone', 'Не указан')}\n"
+        f"🎯 Курс: {reg.get('course_name', 'Не указан')}\n"
         f"📊 Статус: {status_text}\n"
         f"🆔 ID: {reg['id']}\n"
     )
@@ -119,9 +138,26 @@ async def find_student_by_id_process(message: Message, state: FSMContext):
     try:
         student_id = int(message.text)
 
-        # ✅ ИЗМЕНЕНО: Используем новый репозиторий
+        # ✅ ИСПРАВЛЕНО: Прямой SQL с JOIN
         db = get_db()
-        reg = db.registrations.get_by_id(student_id)
+        query = """
+                SELECT r.id, \
+                       r.user_id, \
+                       r.status_code, \
+                       r.created_at, \
+                       r.full_name as name, \
+                       r.phone, \
+                       c.name      as course_name, \
+                       tt.name     as training_type_name, \
+                       s.name      as schedule_name
+                FROM registrations r
+                         LEFT JOIN courses c ON r.course_id = c.id
+                         LEFT JOIN training_types tt ON r.training_type_id = tt.id
+                         LEFT JOIN schedules s ON r.schedule_id = s.id
+                WHERE r.id = ? \
+                """
+        results = db.execute_query(query, (student_id,))
+        reg = results[0] if results else None
 
         if not reg:
             from keyboards.admin_kb import get_cancel_keyboard
@@ -135,9 +171,9 @@ async def find_student_by_id_process(message: Message, state: FSMContext):
         status_text = config.STATUSES.get(reg['status_code'], reg['status_code'])
         info_text = (
             f"✅ *Студент найден!*\n\n"
-            f"👤 Имя: {reg['name']}\n"
-            f"📞 Телефон: {reg['phone']}\n"
-            f"🎯 Курс: {reg['course_name']}\n"
+            f"👤 Имя: {reg.get('name', 'Не указано')}\n"
+            f"📞 Телефон: {reg.get('phone', 'Не указан')}\n"
+            f"🎯 Курс: {reg.get('course_name', 'Не указан')}\n"
             f"📊 Статус: {status_text}\n"
             f"🆔 ID: {reg['id']}\n"
         )
@@ -189,14 +225,23 @@ async def find_student_by_phone_process(message: Message, state: FSMContext):
 
     phone = message.text.strip()
 
-    # ✅ ИЗМЕНЕНО: Поиск через БД с фильтром
+    # ✅ ИСПРАВЛЕНО: SQL с JOIN уже был правильным
     db = get_db()
     query = """
-            SELECT r.*, u.full_name as name, u.phone, c.name as course_name
+            SELECT r.id, \
+                   r.user_id, \
+                   r.status_code, \
+                   r.created_at, \
+                   r.full_name as name, \
+                   r.phone, \
+                   c.name      as course_name, \
+                   tt.name     as training_type_name, \
+                   s.name      as schedule_name
             FROM registrations r
-                     JOIN users u ON r.user_id = u.id
-                     JOIN courses c ON r.course_id = c.id
-            WHERE u.phone LIKE ? \
+                     LEFT JOIN courses c ON r.course_id = c.id
+                     LEFT JOIN training_types tt ON r.training_type_id = tt.id
+                     LEFT JOIN schedules s ON r.schedule_id = s.id
+            WHERE r.phone LIKE ? \
             """
     registrations = db.execute_query(query, (f'%{phone}%',))
 
@@ -214,9 +259,9 @@ async def find_student_by_phone_process(message: Message, state: FSMContext):
 
     info_text = (
         f"✅ *Студент найден!*\n\n"
-        f"👤 Имя: {reg['name']}\n"
-        f"📞 Телефон: {reg['phone']}\n"
-        f"🎯 Курс: {reg['course_name']}\n"
+        f"👤 Имя: {reg.get('name', 'Не указано')}\n"
+        f"📞 Телефон: {reg.get('phone', 'Не указан')}\n"
+        f"🎯 Курс: {reg.get('course_name', 'Не указан')}\n"
         f"📊 Статус: {status_text}\n"
         f"🆔 ID: {reg['id']}\n"
     )
@@ -242,23 +287,39 @@ async def schedule_trial_start(callback: CallbackQuery, state: FSMContext):
     try:
         reg_id = int(callback.data.replace("schedule_trial_", ""))
 
-        # ✅ ИЗМЕНЕНО: Используем новый репозиторий
+        # ✅ ИСПРАВЛЕНО: Прямой SQL с JOIN
         db = get_db()
-        reg = db.registrations.get_by_id(reg_id)
+        query = """
+                SELECT r.id, \
+                       r.user_id, \
+                       r.status_code, \
+                       r.full_name as name, \
+                       r.phone, \
+                       c.name      as course_name, \
+                       tt.name     as training_type_name, \
+                       s.name      as schedule_name
+                FROM registrations r
+                         LEFT JOIN courses c ON r.course_id = c.id
+                         LEFT JOIN training_types tt ON r.training_type_id = tt.id
+                         LEFT JOIN schedules s ON r.schedule_id = s.id
+                WHERE r.id = ? \
+                """
+        results = db.execute_query(query, (reg_id,))
+        reg = results[0] if results else None
 
         if not reg:
             await callback.answer("❌ Студент не найден")
             return
 
         await state.set_state(AdminStates.waiting_for_trial_time)
-        await state.update_data(reg_id=reg_id, student_name=reg['name'])
+        await state.update_data(reg_id=reg_id, student_name=reg.get('name', 'Не указано'))
 
         from keyboards.admin_kb import get_cancel_keyboard
         await callback.message.edit_text(
             f"🎓 *Назначение пробного урока*\n\n"
-            f"👤 Студент: *{reg['name']}*\n"
-            f"📞 Телефон: {reg['phone']}\n"
-            f"📚 Курс: {reg['course_name']}\n\n"
+            f"👤 Студент: *{reg.get('name', 'Не указано')}*\n"
+            f"📞 Телефон: {reg.get('phone', 'Не указан')}\n"
+            f"📚 Курс: {reg.get('course_name', 'Не указан')}\n\n"
             f"⏰ Введите дату и время пробного урока\n"
             f"Формат: `2024-12-31 14:30:00`",
             parse_mode="Markdown",
@@ -267,7 +328,7 @@ async def schedule_trial_start(callback: CallbackQuery, state: FSMContext):
     except ValueError:
         await callback.answer("❌ Ошибка: неверный ID")
     except Exception as e:
-        logger.error(f"Error in schedule_trial_start: {e}")
+        logger.error(f"Error in schedule_trial_start: {e}", exc_info=True)
         await callback.answer("❌ Произошла ошибка")
 
     await callback.answer()
@@ -305,14 +366,28 @@ async def set_trial_time(message: Message, state: FSMContext):
     data = await state.get_data()
     reg_id = data['reg_id']
 
-    # ✅ ИЗМЕНЕНО: Используем новый репозиторий
     db = get_db()
 
-    # Устанавливаем время и меняем статус на 'trial'
-    success_time = db.registrations.set_trial_lesson_time(reg_id, message.text)
-    success_status = db.registrations.update_status(reg_id, 'trial')
+    # ✅ ИСПРАВЛЕНО: Прямые SQL запросы вместо методов репозитория
+    # Устанавливаем время пробного урока
+    try:
+        query_time = """
+                     UPDATE registrations
+                     SET trial_lesson_time = ?,
+                         updated_at        = datetime('now')
+                     WHERE id = ? \
+                     """
+        db.execute_update(query_time, (message.text, reg_id))
 
-    if success_time and success_status:
+        # Меняем статус на 'trial'
+        query_status = """
+                       UPDATE registrations
+                       SET status_code = 'trial',
+                           updated_at  = datetime('now')
+                       WHERE id = ? \
+                       """
+        db.execute_update(query_status, (reg_id,))
+
         from keyboards.admin_kb import get_admin_students_menu
         await message.answer(
             f"✅ *Пробный урок назначен!*\n\n"
@@ -323,7 +398,9 @@ async def set_trial_time(message: Message, state: FSMContext):
             reply_markup=get_admin_students_menu()
         )
         logger.info(f"✅ Пробный урок установлен для ID {reg_id} на {message.text}")
-    else:
+
+    except Exception as e:
+        logger.error(f"Error setting trial time: {e}", exc_info=True)
         from keyboards.admin_kb import get_admin_students_menu
         await message.answer(
             "❌ Ошибка при сохранении времени пробного урока",

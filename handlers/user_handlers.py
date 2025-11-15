@@ -293,32 +293,24 @@ async def get_phone(message: Message, state: FSMContext):
 
 @user_router.callback_query(F.data == "confirm_registration", RegistrationStates.confirmation)
 async def confirm_registration(callback: CallbackQuery, state: FSMContext):
-    """Подтверждение регистрации с детальным логированием"""
+    """Подтверждение регистрации"""
     try:
         data = await state.get_data()
 
-        print("\n" + "=" * 70)
-        print(f"🔍 DEBUG: Starting registration confirmation")
-        print(f"👤 User ID: {callback.from_user.id}")
-        print(f"📝 Username: @{callback.from_user.username or 'N/A'}")
-        print(f"📋 Registration data: {data}")
-        print("=" * 70)
+        print(f"🔍 DEBUG: Starting registration confirmation for user {callback.from_user.id}")
+        print(f"🔍 DEBUG: Registration data: {data}")
 
-        # ============================================
-        # ШАГ 1: Создание пользователя
-        # ============================================
-        print("\n📌 ШАГ 1: Создание пользователя...")
+        # ✅ Создаем пользователя (если не существует)
         user_query = """
                      INSERT OR IGNORE
                      INTO users (telegram_id, full_name, phone)
                      VALUES (?, ?, ?)
                      """
-        rows_affected = db.execute_update(user_query, (
+        db.execute_update(user_query, (
             callback.from_user.id,
             data['name'],
             data['phone']
         ))
-        print(f"✅ User query executed: {rows_affected} rows affected")
 
         # Получаем user_id
         user_query = "SELECT id FROM users WHERE telegram_id = ?"
@@ -326,79 +318,37 @@ async def confirm_registration(callback: CallbackQuery, state: FSMContext):
         user_id = user_rows[0]['id'] if user_rows else None
 
         if not user_id:
-            print("❌ ERROR: Failed to create/get user!")
             await callback.message.edit_text("❌ Ошибка создания пользователя")
             await callback.answer()
             return
 
-        print(f"✅ User ID получен: {user_id}")
-
-        # ============================================
-        # ШАГ 2: Получение ID курса, типа обучения и расписания
-        # ============================================
-        print("\n📌 ШАГ 2: Получение ID справочников...")
-
         # Получаем ID курса по названию
         course_query = "SELECT id FROM courses WHERE name = ?"
         course_rows = db.execute_query(course_query, (data['course'],))
-        course_id = course_rows[0]['id'] if course_rows else None
-        print(f"  📚 Course ID: {course_id} (Курс: {data['course']})")
+        course_id = course_rows[0]['id'] if course_rows else 1  # По умолчанию первый курс
 
         # Получаем ID типа обучения
         training_query = "SELECT id FROM training_types WHERE name = ?"
         training_rows = db.execute_query(training_query, (data['training_type'],))
-        training_type_id = training_rows[0]['id'] if training_rows else None
-        print(f"  📊 Training Type ID: {training_type_id} (Тип: {data['training_type']})")
+        training_type_id = training_rows[0]['id'] if training_rows else 1
 
         # Получаем ID расписания
         schedule_query = "SELECT id FROM schedules WHERE name = ?"
         schedule_rows = db.execute_query(schedule_query, (data['schedule'],))
-        schedule_id = schedule_rows[0]['id'] if schedule_rows else None
-        print(f"  ⏰ Schedule ID: {schedule_id} (Расписание: {data['schedule']})")
+        schedule_id = schedule_rows[0]['id'] if schedule_rows else 1
 
-        if not course_id or not training_type_id or not schedule_id:
-            print(f"❌ ERROR: Missing IDs - Course: {course_id}, Training: {training_type_id}, Schedule: {schedule_id}")
-            await callback.message.edit_text("❌ Ошибка: не найдены данные курса")
-            await callback.answer()
-            return
+        # ✅ Создаем регистрацию со статусом 'trial' (пробный урок)
+        reg_id = db.registrations.create(
+            user_id=user_id,
+            course_id=course_id,
+            training_type_id=training_type_id,
+            schedule_id=schedule_id,
+            status='trial'  # ✅ ИСПРАВЛЕНО: правильный статус для новых регистраций
+        )
 
-        # ============================================
-        # ШАГ 3: Создание регистрации
-        # ============================================
-        print("\n📌 ШАГ 3: Создание регистрации в БД...")
-        print(f"  Параметры:")
-        print(f"    - user_id: {user_id}")
-        print(f"    - course_id: {course_id}")
-        print(f"    - training_type_id: {training_type_id}")
-        print(f"    - schedule_id: {schedule_id}")
-        print(f"    - status: 'trial'")
+        print(f"✅ DEBUG: Registration created with ID: {reg_id}")
 
-        # ✅ ИСПРАВЛЕНО: Используем прямой SQL INSERT вместо метода репозитория
-        insert_query = """
-                       INSERT INTO registrations
-                       (user_id, full_name, phone, course_id, training_type_id, schedule_id, status_code, created_at, \
-                        updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now')) \
-                       """
-
-        reg_id = db.execute_insert(insert_query, (
-            user_id,
-            data['name'],
-            data['phone'],
-            course_id,
-            training_type_id,
-            schedule_id,
-            'trial'
-        ))
-
-        print(f"✅ ✅ ✅ РЕГИСТРАЦИЯ СОЗДАНА! ID: {reg_id} ✅ ✅ ✅")
-        print(f"📊 БД: Запись #{reg_id} сохранена в таблицу 'registrations'")
-        logger.info(f"✅ Registration #{reg_id} created for user {callback.from_user.id}")
-
-        # ============================================
-        # ШАГ 4: Подтверждение пользователю
-        # ============================================
-        print("\n📌 ШАГ 4: Отправка подтверждения пользователю...")
+        # ✅ ДОБАВЛЕНО: Отправляем подтверждение пользователю
         success_message = (
             "✅ *Регистрация успешно завершена!*\n\n"
             f"👤 *Имя:* {data['name']}\n"
@@ -407,9 +357,8 @@ async def confirm_registration(callback: CallbackQuery, state: FSMContext):
             f"📊 *Тип обучения:* {data['training_type']}\n"
             f"⏰ *Расписание:* {data['schedule']}\n"
             f"💰 *Стоимость:* {data['price']}\n\n"
-            f"🔢 *Номер заявки:* #{reg_id}\n\n"
             "📝 *Ваша заявка отправлена!*\n"
-            "Наш администратор свяжется с вами в ближайшее время.\n\n"
+            "Наш администратор свяжется с вами в ближайшее время для подтверждения пробного урока.\n\n"
             "Спасибо за обращение! 🙏"
         )
 
@@ -418,66 +367,20 @@ async def confirm_registration(callback: CallbackQuery, state: FSMContext):
             parse_mode="Markdown",
             reply_markup=get_main_keyboard()
         )
-        print("✅ Подтверждение отправлено пользователю")
 
-        # ============================================
-        # ШАГ 5: Уведомление администраторам
-        # ============================================
-        print("\n📌 ШАГ 5: Отправка уведомлений администраторам...")
-        print(f"  Список администраторов: {config.ADMIN_IDS}")
+        # ✅ ДОБАВЛЕНО: Отправляем уведомление администраторам
+        bot = callback.bot  # Получаем экземпляр бота из callback
+        await send_registration_to_admins(bot, data, callback.from_user)
 
-        bot = callback.bot
-        await send_registration_to_admins(bot, data, callback.from_user, reg_id)
-
-        # ============================================
-        # ШАГ 6: Отправка в канал (если настроен)
-        # ============================================
-        if hasattr(config, 'CHANNEL_ID') and config.CHANNEL_ID:
-            print(f"\n📌 ШАГ 6: Отправка уведомления в канал {config.CHANNEL_ID}...")
-            try:
-                channel_message = (
-                    f"🆕 *НОВАЯ РЕГИСТРАЦИЯ #{reg_id}*\n\n"
-                    f"👤 *Студент:* {data['name']}\n"
-                    f"🎓 *Курс:* {data['course']}\n"
-                    f"📊 *Тип:* {data['training_type']}\n"
-                    f"⏰ *Расписание:* {data['schedule']}\n"
-                    f"💰 *Стоимость:* {data['price']}\n\n"
-                    f"🕒 {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
-                )
-                await bot.send_message(config.CHANNEL_ID, channel_message, parse_mode="Markdown")
-                print(f"✅ Уведомление отправлено в канал {config.CHANNEL_ID}")
-                logger.info(f"✅ Registration #{reg_id} notification sent to channel {config.CHANNEL_ID}")
-            except Exception as e:
-                print(f"❌ Ошибка отправки в канал: {e}")
-                logger.error(f"❌ Error sending to channel: {e}", exc_info=True)
-        else:
-            print(f"\n📌 ШАГ 6: Канал не настроен, пропускаем")
-
-        # ============================================
-        # ШАГ 7: Очистка состояния
-        # ============================================
-        print("\n📌 ШАГ 7: Очистка состояния FSM...")
+        # ✅ ДОБАВЛЕНО: Очищаем состояние
         await state.clear()
         await callback.answer("✅ Регистрация завершена!")
-        print("✅ Состояние очищено")
-
-        print("\n" + "=" * 70)
-        print(f"🎉 РЕГИСТРАЦИЯ УСПЕШНО ЗАВЕРШЕНА!")
-        print(f"📊 ID регистрации: {reg_id}")
-        print(f"👤 Пользователь: {data['name']} (ID: {user_id})")
-        print(f"🎓 Курс: {data['course']}")
-        print("=" * 70 + "\n")
 
         logger.info(f"✅ User {callback.from_user.id} registered successfully with registration ID: {reg_id}")
 
     except Exception as e:
-        print("\n" + "=" * 70)
-        print(f"❌ ❌ ❌ ОШИБКА В ПРОЦЕССЕ РЕГИСТРАЦИИ!")
-        print(f"Тип ошибки: {type(e).__name__}")
-        print(f"Сообщение: {str(e)}")
-        print("=" * 70 + "\n")
-
-        logger.error(f"❌ Error in confirm_registration: {e}", exc_info=True)
+        logger.error(f"Ошибка подтверждения регистрации: {e}", exc_info=True)
+        print(f"❌ DEBUG: Exception in confirm_registration: {e}")
 
         await callback.message.edit_text(
             "❌ Произошла ошибка при сохранении. Попробуйте позже.",
@@ -485,6 +388,72 @@ async def confirm_registration(callback: CallbackQuery, state: FSMContext):
         )
         await state.clear()
         await callback.answer("❌ Ошибка регистрации")
+
+
+async def send_registration_to_admins(bot, data, user):
+    """Отправка уведомления о новой регистрации администраторам"""
+    try:
+        message_text = (
+            "🆕 *НОВАЯ РЕГИСТРАЦИЯ!*\n\n"
+            f"👤 *Имя:* {data['name']}\n"
+            f"📞 *Телефон:* {data['phone']}\n"
+            f"🆔 *Telegram ID:* `{user.id}`\n"  # ✅ Форматирование для копирования
+            f"📝 *Username:* @{user.username or 'не указан'}\n\n"
+            f"🎓 *Курс:* {data['course']}\n"
+            f"📊 *Тип обучения:* {data['training_type']}\n"
+            f"⏰ *Расписание:* {data['schedule']}\n"
+            f"💰 *Стоимость:* {data['price']}\n\n"
+            f"🕒 *Время:* {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        )
+
+        # ✅ ДОБАВЛЕНО: Счетчик успешных отправок
+        sent_count = 0
+
+        for admin_id in config.ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, message_text, parse_mode="Markdown")
+                sent_count += 1
+                logger.info(f"✅ Notification sent to admin {admin_id}")
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки администратору {admin_id}: {e}")
+
+        logger.info(f"✅ Registration notification sent to {sent_count}/{len(config.ADMIN_IDS)} admins")
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка send_registration_to_admins: {e}", exc_info=True)
+
+
+async def send_registration_to_admins(bot, data, user):
+    """Отправка уведомления о новой регистрации администраторам"""
+    try:
+        message_text = (
+            "🆕 *НОВАЯ РЕГИСТРАЦИЯ!*\n\n"
+            f"👤 *Имя:* {data['name']}\n"
+            f"📞 *Телефон:* {data['phone']}\n"
+            f"🆔 *Telegram ID:* `{user.id}`\n"  # ✅ Форматирование для копирования
+            f"📝 *Username:* @{user.username or 'не указан'}\n\n"
+            f"🎓 *Курс:* {data['course']}\n"
+            f"📊 *Тип обучения:* {data['training_type']}\n"
+            f"⏰ *Расписание:* {data['schedule']}\n"
+            f"💰 *Стоимость:* {data['price']}\n\n"
+            f"🕒 *Время:* {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        )
+
+        # ✅ ДОБАВЛЕНО: Счетчик успешных отправок
+        sent_count = 0
+
+        for admin_id in config.ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, message_text, parse_mode="Markdown")
+                sent_count += 1
+                logger.info(f"✅ Notification sent to admin {admin_id}")
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки администратору {admin_id}: {e}")
+
+        logger.info(f"✅ Registration notification sent to {sent_count}/{len(config.ADMIN_IDS)} admins")
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка send_registration_to_admins: {e}", exc_info=True)
 
 
 async def send_registration_to_admins(bot, data, user, reg_id):
@@ -1607,7 +1576,13 @@ async def show_courses(callback: CallbackQuery):
             user_id = user_rows[0]['id']
 
             # Получаем регистрации пользователя
-            registrations = db.registrations.get_by_user_id(user_id)
+            db.execute_query("""
+                             SELECT r.*, c.name as course_name
+                             FROM registrations r
+                                      LEFT JOIN courses c ON r.course_id = c.id
+                             WHERE r.user_id = ?
+                             ORDER BY r.created_at DESC
+                             """, (user_id,))
 
             if not registrations:
                 await callback.message.edit_text(
