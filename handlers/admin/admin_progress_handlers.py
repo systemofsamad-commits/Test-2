@@ -8,7 +8,7 @@ from helpers import is_admin, get_db
 from config import Config
 
 logger = logging.getLogger(__name__)
-router = Router(name="admin_progress_handlers")  # ✅ ИСПРАВЛЕНО: router вместо router_progress
+router = Router(name="admin_progress_handlers")
 config = Config()
 
 
@@ -22,7 +22,21 @@ async def handle_update_progress(callback: CallbackQuery, state: FSMContext):
     registration_id = int(callback.data.split("_")[2])
 
     db = get_db()
-    reg = db.registrations.get_by_id(registration_id)
+
+    # ✅ ИСПРАВЛЕНО: Прямой SQL запрос
+    query = """
+            SELECT r.id, \
+                   r.status_code, \
+                   r.notes,
+                   r.full_name as name, \
+                   r.phone,
+                   c.name      as course_name
+            FROM registrations r
+                     LEFT JOIN courses c ON r.course_id = c.id
+            WHERE r.id = ? \
+            """
+    results = db.execute_query(query, (registration_id,))
+    reg = results[0] if results else None
 
     if not reg:
         await callback.answer("Студент не найден", show_alert=True)
@@ -64,18 +78,48 @@ async def handle_progress_selection(callback: CallbackQuery, state: FSMContext):
         progress_text = progress_map.get(progress_type, progress_type)
 
         db = get_db()
-        db.registrations.add_note(registration_id, f"Прогресс: {progress_text}")
 
-        reg = db.registrations.get_by_id(registration_id)
-        from keyboards.admin_kb import get_student_actions_keyboard
-        await callback.message.edit_text(
-            f"✅ Прогресс обновлен: {progress_text}\n"
-            f"Для студента: {reg['name']}",
-            reply_markup=get_student_actions_keyboard(
-                registration_id,
-                reg['status_code']
+        # ✅ ИСПРАВЛЕНО: Прямой SQL UPDATE для добавления заметки
+        try:
+            query = """
+                    UPDATE registrations
+                    SET notes      = CASE \
+                                         WHEN notes IS NULL OR notes = '' THEN ? \
+                                         ELSE notes || '\n' || ?
+                        END,
+                        updated_at = datetime('now')
+                    WHERE id = ? \
+                    """
+            note_text = f"Прогресс: {progress_text}"
+            db.execute_update(query, (note_text, note_text, registration_id))
+        except Exception as e:
+            logger.error(f"Error adding note: {e}", exc_info=True)
+
+        # ✅ ИСПРАВЛЕНО: Прямой SQL SELECT
+        query = """
+                SELECT r.id, \
+                       r.status_code, \
+                       r.notes,
+                       r.full_name as name, \
+                       r.phone,
+                       c.name      as course_name
+                FROM registrations r
+                         LEFT JOIN courses c ON r.course_id = c.id
+                WHERE r.id = ? \
+                """
+        results = db.execute_query(query, (registration_id,))
+        reg = results[0] if results else None
+
+        if reg:
+            from keyboards.admin_kb import get_student_actions_keyboard
+            await callback.message.edit_text(
+                f"✅ Прогресс обновлен: {progress_text}\n"
+                f"Для студента: {reg['name']}",
+                reply_markup=get_student_actions_keyboard(
+                    registration_id,
+                    reg['status_code']
+                )
             )
-        )
 
     await callback.answer()
 
@@ -90,18 +134,49 @@ async def handle_custom_progress_input(message: Message, state: FSMContext):
     registration_id = data.get('registration_id')
 
     db = get_db()
-    db.registrations.add_note(registration_id, f"Прогресс: {message.text}")
 
-    reg = db.registrations.get_by_id(registration_id)
-    from keyboards.admin_kb import get_student_actions_keyboard
-    await message.answer(
-        f"✅ Прогресс обновлен: {message.text}\n"
-        f"Для студента: {reg['name']}",
-        reply_markup=get_student_actions_keyboard(
-            registration_id,
-            reg['status_code']
+    # ✅ ИСПРАВЛЕНО: Прямой SQL UPDATE для добавления заметки
+    try:
+        query = """
+                UPDATE registrations
+                SET notes      = CASE \
+                                     WHEN notes IS NULL OR notes = '' THEN ? \
+                                     ELSE notes || '\n' || ?
+                    END,
+                    updated_at = datetime('now')
+                WHERE id = ? \
+                """
+        note_text = f"Прогресс: {message.text}"
+        db.execute_update(query, (note_text, note_text, registration_id))
+    except Exception as e:
+        logger.error(f"Error adding note: {e}", exc_info=True)
+
+    # ✅ ИСПРАВЛЕНО: Прямой SQL SELECT
+    query = """
+            SELECT r.id, \
+                   r.status_code, \
+                   r.notes,
+                   r.full_name as name, \
+                   r.phone,
+                   c.name      as course_name
+            FROM registrations r
+                     LEFT JOIN courses c ON r.course_id = c.id
+            WHERE r.id = ? \
+            """
+    results = db.execute_query(query, (registration_id,))
+    reg = results[0] if results else None
+
+    if reg:
+        from keyboards.admin_kb import get_student_actions_keyboard
+        await message.answer(
+            f"✅ Прогресс обновлен: {message.text}\n"
+            f"Для студента: {reg['name']}",
+            reply_markup=get_student_actions_keyboard(
+                registration_id,
+                reg['status_code']
+            )
         )
-    )
+
     await state.clear()
 
 
@@ -114,7 +189,24 @@ async def handle_student_contacts(callback: CallbackQuery):
     registration_id = int(callback.data.split("_")[2])
 
     db = get_db()
-    reg = db.registrations.get_by_id(registration_id)
+
+    # ✅ ИСПРАВЛЕНО: Прямой SQL SELECT
+    query = """
+            SELECT r.id, \
+                   r.status_code, \
+                   r.notes,
+                   r.full_name as name, \
+                   r.phone, \
+                   r.email,
+                   u.telegram_id,
+                   c.name      as course_name
+            FROM registrations r
+                     LEFT JOIN users u ON r.user_id = u.id
+                     LEFT JOIN courses c ON r.course_id = c.id
+            WHERE r.id = ? \
+            """
+    results = db.execute_query(query, (registration_id,))
+    reg = results[0] if results else None
 
     if not reg:
         await callback.answer("Студент не найден", show_alert=True)
@@ -144,7 +236,26 @@ async def handle_full_info(callback: CallbackQuery):
     registration_id = int(callback.data.split("_")[2])
 
     db = get_db()
-    reg = db.registrations.get_by_id(registration_id)
+
+    # ✅ ИСПРАВЛЕНО: Прямой SQL SELECT
+    query = """
+            SELECT r.id, \
+                   r.status_code, \
+                   r.notes, \
+                   r.created_at, \
+                   r.updated_at,
+                   r.full_name as name, \
+                   r.phone, \
+                   r.email,
+                   u.telegram_id,
+                   c.name      as course_name
+            FROM registrations r
+                     LEFT JOIN users u ON r.user_id = u.id
+                     LEFT JOIN courses c ON r.course_id = c.id
+            WHERE r.id = ? \
+            """
+    results = db.execute_query(query, (registration_id,))
+    reg = results[0] if results else None
 
     if not reg:
         await callback.answer("Студент не найден", show_alert=True)
@@ -164,7 +275,7 @@ async def handle_full_info(callback: CallbackQuery):
 - Telegram ID: {reg.get('telegram_id', 'Не указан')}
 
 🎓 Обучение:
-- Курс: {reg['course_name']}
+- Курс: {reg.get('course_name', 'Не указан')}
 - Прогресс: {reg.get('notes', 'Не указан')}
 
 📅 Даты:

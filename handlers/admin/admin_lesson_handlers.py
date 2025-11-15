@@ -8,7 +8,7 @@ from helpers import is_admin, get_db
 from config import Config
 
 logger = logging.getLogger(__name__)
-router = Router(name="admin_lesson_handlers")  # ✅ ИСПРАВЛЕНО: router вместо router_lessons
+router = Router(name="admin_lesson_handlers")
 config = Config()
 
 
@@ -19,7 +19,22 @@ async def add_lesson_start(callback: CallbackQuery, state: FSMContext):
         return
 
     db = get_db()
-    groups = db.groups.get_all_active()
+
+    # ✅ ИСПРАВЛЕНО: Прямой SQL запрос для получения активных групп
+    query = """
+            SELECT g.id, \
+                   g.name, \
+                   g.course_id, \
+                   g.teacher_id,
+                   c.name as course_name, \
+                   t.name as teacher_name
+            FROM groups g
+                     LEFT JOIN courses c ON g.course_id = c.id
+                     LEFT JOIN teachers t ON g.teacher_id = t.id
+            WHERE g.is_active = 1
+            ORDER BY g.name \
+            """
+    groups = db.execute_query(query)
 
     if not groups:
         from keyboards.admin_kb import get_lesson_management_keyboard
@@ -58,7 +73,22 @@ async def select_lesson_group(callback: CallbackQuery, state: FSMContext):
     group_id = int(callback.data.replace("select_lesson_group_", ""))
 
     db = get_db()
-    group = db.groups.get_by_id(group_id)
+
+    # ✅ ИСПРАВЛЕНО: Прямой SQL запрос для получения группы
+    query = """
+            SELECT g.id, \
+                   g.name, \
+                   g.course_id, \
+                   g.teacher_id,
+                   c.name as course_name, \
+                   t.name as teacher_name
+            FROM groups g
+                     LEFT JOIN courses c ON g.course_id = c.id
+                     LEFT JOIN teachers t ON g.teacher_id = t.id
+            WHERE g.id = ? \
+            """
+    results = db.execute_query(query, (group_id,))
+    group = results[0] if results else None
 
     if not group:
         await callback.answer("❌ Группа не найдена.")
@@ -128,7 +158,22 @@ async def add_lesson_date_process(message: Message, state: FSMContext):
     data = await state.get_data()
 
     db = get_db()
-    group = db.groups.get_by_id(data['lesson_group_id'])
+
+    # ✅ ИСПРАВЛЕНО: Прямой SQL запрос для получения группы
+    query = """
+            SELECT g.id, \
+                   g.name, \
+                   g.course_id, \
+                   g.teacher_id,
+                   c.name as course_name, \
+                   t.name as teacher_name
+            FROM groups g
+                     LEFT JOIN courses c ON g.course_id = c.id
+                     LEFT JOIN teachers t ON g.teacher_id = t.id
+            WHERE g.id = ? \
+            """
+    results = db.execute_query(query, (data['lesson_group_id'],))
+    group = results[0] if results else None
 
     if not group or not group.get('teacher_id'):
         from keyboards.admin_kb import get_lesson_management_keyboard
@@ -139,14 +184,23 @@ async def add_lesson_date_process(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    # Сохраняем урок
-    success = db.lessons.create(
-        group_id=data['lesson_group_id'],
-        teacher_id=group['teacher_id'],
-        topic=data['lesson_topic'],
-        lesson_date=message.text,
-        duration_minutes=60
-    )
+    # ✅ ИСПРАВЛЕНО: Прямой SQL INSERT для создания урока
+    try:
+        query = """
+                INSERT INTO lessons (group_id, teacher_id, topic, lesson_date, duration_minutes, created_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now')) \
+                """
+        lesson_id = db.execute_insert(query, (
+            data['lesson_group_id'],
+            group['teacher_id'],
+            data['lesson_topic'],
+            message.text,
+            60
+        ))
+        success = lesson_id is not None
+    except Exception as e:
+        logger.error(f"Error creating lesson: {e}", exc_info=True)
+        success = False
 
     if success:
         from keyboards.admin_kb import get_lesson_management_keyboard
@@ -191,7 +245,7 @@ async def list_lessons(callback: CallbackQuery):
 
     db = get_db()
 
-    # Получаем уроки через прямой SQL запрос (если метод get_all_lessons не работает)
+    # ✅ ИСПРАВЛЕНО: Прямой SQL запрос для получения уроков
     try:
         query = """
                 SELECT l.id, \
@@ -203,10 +257,12 @@ async def list_lessons(callback: CallbackQuery):
                 FROM lessons l
                          LEFT JOIN groups g ON l.group_id = g.id
                          LEFT JOIN teachers t ON l.teacher_id = t.id
-                ORDER BY l.lesson_date DESC LIMIT 20 \
+                ORDER BY l.lesson_date DESC
+                LIMIT 20 \
                 """
         lessons = db.execute_query(query)
-    except:
+    except Exception as e:
+        logger.error(f"Error fetching lessons: {e}", exc_info=True)
         lessons = []
 
     if not lessons:

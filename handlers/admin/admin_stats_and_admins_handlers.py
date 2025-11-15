@@ -4,14 +4,12 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
 
 from states.admin_states import AdminStates
-from helpers import get_db
-from helpers import is_admin
+from helpers import get_db, is_admin
 from config import Config
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin_stats_and_admins_handlers")
 config = Config()
-db = get_db()
 
 
 # ============ СТАТИСТИКА ============
@@ -24,14 +22,31 @@ async def show_general_stats(callback: CallbackQuery):
         return
 
     try:
-        # Получаем все регистрации
-        all_students = db.get_all_registrations()
+        db = get_db()
 
-        # Считаем по статусам
+        # ✅ ИСПРАВЛЕНО: Прямой SQL запрос для получения всех регистраций
+        query_all = """
+                    SELECT r.id, \
+                           r.status_code, \
+                           r.full_name, \
+                           r.phone,
+                           c.name as course_name
+                    FROM registrations r
+                             LEFT JOIN courses c ON r.course_id = c.id \
+                    """
+        all_students = db.execute_query(query_all)
+
+        # ✅ ИСПРАВЛЕНО: Считаем по статусам через SQL
         stats_by_status = {}
         for status_key, status_name in config.STATUSES.items():
-            students = db.get_students_by_status(status_key)
-            stats_by_status[status_name] = len(students)
+            query = """
+                    SELECT COUNT(*) as count
+                    FROM registrations
+                    WHERE status_code = ? \
+                    """
+            result = db.execute_query(query, (status_key,))
+            count = result[0]['count'] if result else 0
+            stats_by_status[status_name] = count
 
         # Общая статистика
         total_students = len(all_students)
@@ -45,15 +60,20 @@ async def show_general_stats(callback: CallbackQuery):
             percentage = (count / total_students * 100) if total_students > 0 else 0
             text += f"  • {status_name}: {count} ({percentage:.1f}%)\n"
 
-        # Статистика по курсам
+        # ✅ ИСПРАВЛЕНО: Статистика по курсам через SQL
         text += "\n📚 *По курсам:*\n"
-        courses_stats = {}
-        for student in all_students:
-            course = student.course
-            courses_stats[course] = courses_stats.get(course, 0) + 1
+        query_courses = """
+                        SELECT c.name as course_name, COUNT(r.id) as count
+                        FROM registrations r
+                                 LEFT JOIN courses c ON r.course_id = c.id
+                        GROUP BY c.name
+                        ORDER BY count DESC \
+                        """
+        courses_stats = db.execute_query(query_courses)
 
-        for course, count in sorted(courses_stats.items(), key=lambda x: x[1], reverse=True):
-            text += f"  • {course}: {count} чел.\n"
+        for course in courses_stats:
+            if course.get('course_name'):
+                text += f"  • {course['course_name']}: {course['count']} чел.\n"
 
         from keyboards.admin_kb import get_admin_stats_menu
         await callback.message.edit_text(
@@ -63,7 +83,7 @@ async def show_general_stats(callback: CallbackQuery):
         )
 
     except Exception as e:
-        logger.error(f"Error in show_general_stats: {e}")
+        logger.error(f"Error in show_general_stats: {e}", exc_info=True)
         await callback.answer("❌ Ошибка получения статистики")
 
     await callback.answer()
@@ -77,21 +97,53 @@ async def show_weekly_stats(callback: CallbackQuery):
         return
 
     try:
-        stats = db.get_weekly_stats()
+        db = get_db()
+
+        # ✅ ИСПРАВЛЕНО: Прямые SQL запросы для недельной статистики
+        # Новые регистрации за неделю
+        query_new = """
+                    SELECT COUNT(*) as count
+                    FROM registrations
+                    WHERE created_at >= datetime('now', '-7 days') \
+                    """
+        new_reg_result = db.execute_query(query_new)
+        new_registrations = new_reg_result[0]['count'] if new_reg_result else 0
+
+        # Завершили обучение за неделю
+        query_completed = """
+                          SELECT COUNT(*) as count
+                          FROM registrations
+                          WHERE status_code = 'completed'
+                            AND updated_at >= datetime('now', '-7 days') \
+                          """
+        completed_result = db.execute_query(query_completed)
+        completed = completed_result[0]['count'] if completed_result else 0
+
+        # Заморожено за неделю
+        query_frozen = """
+                       SELECT COUNT(*) as count
+                       FROM registrations
+                       WHERE status_code = 'frozen'
+                         AND updated_at >= datetime('now', '-7 days') \
+                       """
+        frozen_result = db.execute_query(query_frozen)
+        frozen = frozen_result[0]['count'] if frozen_result else 0
+
+        # Начали обучение за неделю
+        query_started = """
+                        SELECT COUNT(*) as count
+                        FROM registrations
+                        WHERE status_code = 'studying'
+                          AND updated_at >= datetime('now', '-7 days') \
+                        """
+        started_result = db.execute_query(query_started)
+        started_studying = started_result[0]['count'] if started_result else 0
 
         text = "📅 *Статистика за неделю*\n\n"
-
-        text += f"📝 *Новых регистраций:* {stats.get('new_registrations', 0)}\n"
-        text += f"✅ *Завершили обучение:* {stats.get('completed', 0)}\n"
-        text += f"❄️ *Заморожено:* {stats.get('frozen', 0)}\n"
-        text += f"🎓 *Начали обучение:* {stats.get('started_studying', 0)}\n\n"
-
-        # Активность по дням
-        if 'daily' in stats:
-            text += "📊 *По дням недели:*\n"
-            days = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
-            for i, count in enumerate(stats['daily']):
-                text += f"  {days[i]}: {count} рег.\n"
+        text += f"📝 *Новых регистраций:* {new_registrations}\n"
+        text += f"✅ *Завершили обучение:* {completed}\n"
+        text += f"❄️ *Заморожено:* {frozen}\n"
+        text += f"🎓 *Начали обучение:* {started_studying}\n\n"
 
         from keyboards.admin_kb import get_admin_stats_menu
         await callback.message.edit_text(
@@ -101,7 +153,7 @@ async def show_weekly_stats(callback: CallbackQuery):
         )
 
     except Exception as e:
-        logger.error(f"Error in show_weekly_stats: {e}")
+        logger.error(f"Error in show_weekly_stats: {e}", exc_info=True)
         await callback.answer("❌ Ошибка получения статистики")
 
     await callback.answer()
@@ -115,29 +167,55 @@ async def show_feedback_stats(callback: CallbackQuery):
         return
 
     try:
-        stats = db.get_feedback_stats()
+        db = get_db()
 
-        text = "💬 *Статистика обратной связи*\n\n"
+        # ✅ ИСПРАВЛЕНО: Прямые SQL запросы для статистики отзывов
+        # Проверяем наличие таблицы feedback
+        check_table = """
+                      SELECT name \
+                      FROM sqlite_master
+                      WHERE type = 'table' \
+                        AND name = 'feedback' \
+                      """
+        table_exists = db.execute_query(check_table)
 
-        text += f"📝 *Всего отзывов:* {stats.get('total', 0)}\n\n"
+        if not table_exists:
+            text = "💬 *Статистика обратной связи*\n\n"
+            text += "📝 Таблица отзывов не найдена.\n"
+            text += "Функция находится в разработке."
+        else:
+            # Общее количество
+            query_total = "SELECT COUNT(*) as count FROM feedback"
+            total_result = db.execute_query(query_total)
+            total = total_result[0]['count'] if total_result else 0
 
-        # По типам
-        text += "📋 *По типам:*\n"
-        text += f"  ⭐ Отзывы: {stats.get('reviews', 0)}\n"
-        text += f"  💡 Предложения: {stats.get('suggestions', 0)}\n"
-        text += f"  🐞 Проблемы: {stats.get('issues', 0)}\n\n"
+            # По типам
+            query_reviews = "SELECT COUNT(*) as count FROM feedback WHERE type = 'review'"
+            reviews_result = db.execute_query(query_reviews)
+            reviews = reviews_result[0]['count'] if reviews_result else 0
 
-        # Средняя оценка
-        if stats.get('avg_rating'):
-            text += f"⭐ *Средняя оценка:* {stats['avg_rating']:.1f}/5\n\n"
+            query_suggestions = "SELECT COUNT(*) as count FROM feedback WHERE type = 'suggestion'"
+            suggestions_result = db.execute_query(query_suggestions)
+            suggestions = suggestions_result[0]['count'] if suggestions_result else 0
 
-        # Распределение оценок
-        if 'rating_distribution' in stats:
-            text += "📊 *Распределение оценок:*\n"
-            for rating in range(5, 0, -1):
-                count = stats['rating_distribution'].get(rating, 0)
-                stars = "⭐" * rating
-                text += f"  {stars}: {count}\n"
+            query_issues = "SELECT COUNT(*) as count FROM feedback WHERE type = 'issue'"
+            issues_result = db.execute_query(query_issues)
+            issues = issues_result[0]['count'] if issues_result else 0
+
+            # Средняя оценка
+            query_avg = "SELECT AVG(rating) as avg_rating FROM feedback WHERE rating IS NOT NULL"
+            avg_result = db.execute_query(query_avg)
+            avg_rating = avg_result[0]['avg_rating'] if avg_result and avg_result[0]['avg_rating'] else 0
+
+            text = "💬 *Статистика обратной связи*\n\n"
+            text += f"📝 *Всего отзывов:* {total}\n\n"
+            text += "📋 *По типам:*\n"
+            text += f"  ⭐ Отзывы: {reviews}\n"
+            text += f"  💡 Предложения: {suggestions}\n"
+            text += f"  🐞 Проблемы: {issues}\n\n"
+
+            if avg_rating > 0:
+                text += f"⭐ *Средняя оценка:* {avg_rating:.1f}/5\n"
 
         from keyboards.admin_kb import get_admin_stats_menu
         await callback.message.edit_text(
@@ -147,7 +225,7 @@ async def show_feedback_stats(callback: CallbackQuery):
         )
 
     except Exception as e:
-        logger.error(f"Error in show_feedback_stats: {e}")
+        logger.error(f"Error in show_feedback_stats: {e}", exc_info=True)
         await callback.answer("❌ Ошибка получения статистики")
 
     await callback.answer()
@@ -161,40 +239,48 @@ async def show_payment_stats(callback: CallbackQuery):
         return
 
     try:
-        # Получаем студентов по статусам
-        waiting_payment = db.get_students_by_status('waiting_payment')
-        studying = db.get_students_by_status('studying')
-        completed = db.get_students_by_status('completed')
+        db = get_db()
+
+        # ✅ ИСПРАВЛЕНО: Прямые SQL запросы для получения студентов по статусам
+        query_waiting = """
+                        SELECT r.id, \
+                               r.full_name as name, \
+                               r.phone,
+                               c.name      as course_name
+                        FROM registrations r
+                                 LEFT JOIN courses c ON r.course_id = c.id
+                        WHERE r.status_code = 'waiting_payment' \
+                        """
+        waiting_payment = db.execute_query(query_waiting)
+
+        query_studying = """
+                         SELECT COUNT(*) as count
+                         FROM registrations
+                         WHERE status_code = 'studying' \
+                         """
+        studying_result = db.execute_query(query_studying)
+        studying_count = studying_result[0]['count'] if studying_result else 0
+
+        query_completed = """
+                          SELECT COUNT(*) as count
+                          FROM registrations
+                          WHERE status_code = 'completed' \
+                          """
+        completed_result = db.execute_query(query_completed)
+        completed_count = completed_result[0]['count'] if completed_result else 0
 
         text = "💰 *Статистика по оплатам*\n\n"
-
         text += f"🟠 *Ожидают оплаты:* {len(waiting_payment)} чел.\n"
-        text += f"🔵 *Оплатили и обучаются:* {len(studying)} чел.\n"
-        text += f"🟣 *Завершили курс:* {len(completed)} чел.\n\n"
-
-        # Потенциальный доход от ожидающих
-        if waiting_payment:
-            text += "💵 *От ожидающих оплату:*\n"
-            total_potential = 0
-            for student in waiting_payment:
-                try:
-                    # Извлекаем число из строки цены
-                    price_str = student.price.replace(',', '').replace(' ', '')
-                    import re
-                    price_match = re.search(r'\d+', price_str)
-                    if price_match:
-                        total_potential += int(price_match.group())
-                except:
-                    pass
-
-            if total_potential > 0:
-                text += f"  Потенциальный доход: ~{total_potential:,} сум\n\n"
+        text += f"🔵 *Оплатили и обучаются:* {studying_count} чел.\n"
+        text += f"🟣 *Завершили курс:* {completed_count} чел.\n\n"
 
         # Список ожидающих оплату
         if waiting_payment and len(waiting_payment) <= 10:
             text += "👥 *Список ожидающих:*\n"
             for student in waiting_payment[:10]:
-                text += f"  • {student.name} - {student.course}\n"
+                course = student.get('course_name', 'Не указан')
+                name = student.get('name', 'Не указано')
+                text += f"  • {name} - {course}\n"
 
         from keyboards.admin_kb import get_admin_stats_menu
         await callback.message.edit_text(
@@ -204,7 +290,7 @@ async def show_payment_stats(callback: CallbackQuery):
         )
 
     except Exception as e:
-        logger.error(f"Error in show_payment_stats: {e}")
+        logger.error(f"Error in show_payment_stats: {e}", exc_info=True)
         await callback.answer("❌ Ошибка получения статистики")
 
     await callback.answer()
@@ -256,13 +342,26 @@ async def process_admin_id(message: Message, state: FSMContext):
             await message.answer("❌ Вы уже являетесь администратором!")
             return
 
-        # Проверка что администратор ещё не добавлен
-        if db.is_admin(admin_id):
+        # ✅ ИСПРАВЛЕНО: Проверка что администратор ещё не добавлен через SQL
+        db = get_db()
+        query_check = "SELECT user_id FROM admins WHERE user_id = ?"
+        existing = db.execute_query(query_check, (admin_id,))
+
+        if existing:
             await message.answer(f"⚠️ Пользователь {admin_id} уже является администратором!")
             return
 
-        # Добавляем администратора
-        success = db.add_admin(admin_id)
+        # ✅ ИСПРАВЛЕНО: Добавляем администратора через SQL
+        try:
+            query_insert = """
+                           INSERT INTO admins (user_id, is_active, created_at)
+                           VALUES (?, 1, datetime('now')) \
+                           """
+            db.execute_insert(query_insert, (admin_id,))
+            success = True
+        except Exception as e:
+            logger.error(f"Error adding admin: {e}", exc_info=True)
+            success = False
 
         if success:
             from keyboards.admin_kb import get_admin_admins_menu
@@ -308,8 +407,15 @@ async def remove_admin_start(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Доступ запрещён")
         return
 
-    # Получаем список администраторов
-    admins = db.get_all_admins()
+    # ✅ ИСПРАВЛЕНО: Получаем список администраторов через SQL
+    db = get_db()
+    query = """
+            SELECT user_id, username, full_name, created_at, is_active
+            FROM admins
+            WHERE is_active = 1
+            ORDER BY created_at DESC \
+            """
+    admins = db.execute_query(query)
 
     if len(admins) <= 1:
         await callback.answer(
@@ -364,13 +470,23 @@ async def process_remove_admin_id(message: Message, state: FSMContext):
             await message.answer("❌ Вы не можете удалить себя из администраторов!")
             return
 
-        # Проверка что это администратор
-        if not db.is_admin(admin_id):
+        # ✅ ИСПРАВЛЕНО: Проверка что это администратор через SQL
+        db = get_db()
+        query_check = "SELECT user_id FROM admins WHERE user_id = ?"
+        existing = db.execute_query(query_check, (admin_id,))
+
+        if not existing:
             await message.answer(f"⚠️ Пользователь {admin_id} не является администратором!")
             return
 
-        # Удаляем администратора
-        success = db.remove_admin(admin_id)
+        # ✅ ИСПРАВЛЕНО: Удаляем администратора через SQL
+        try:
+            query_delete = "DELETE FROM admins WHERE user_id = ?"
+            db.execute_update(query_delete, (admin_id,))
+            success = True
+        except Exception as e:
+            logger.error(f"Error removing admin: {e}", exc_info=True)
+            success = False
 
         if success:
             from keyboards.admin_kb import get_admin_admins_menu
@@ -416,7 +532,14 @@ async def list_admins(callback: CallbackQuery):
         await callback.answer("❌ Доступ запрещён")
         return
 
-    admins = db.get_all_admins()
+    # ✅ ИСПРАВЛЕНО: Получаем список администраторов через SQL
+    db = get_db()
+    query = """
+            SELECT user_id, username, full_name, created_at, is_active
+            FROM admins
+            ORDER BY created_at DESC \
+            """
+    admins = db.execute_query(query)
 
     if not admins:
         text = "📋 Список администраторов пуст"

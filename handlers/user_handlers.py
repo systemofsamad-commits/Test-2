@@ -6,6 +6,8 @@ import sys
 
 import aiogram.exceptions
 
+from database import registrations
+
 # Добавляем путь к корневой папке проекта
 current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if current_dir not in sys.path:
@@ -298,11 +300,11 @@ async def confirm_registration(callback: CallbackQuery, state: FSMContext):
         print(f"🔍 DEBUG: Starting registration confirmation for user {callback.from_user.id}")
         print(f"🔍 DEBUG: Registration data: {data}")
 
+        # ✅ Создаем пользователя (если не существует)
         user_query = """
-                     INSERT \
-                         OR IGNORE
+                     INSERT OR IGNORE
                      INTO users (telegram_id, full_name, phone)
-                     VALUES (?, ?, ?) \
+                     VALUES (?, ?, ?)
                      """
         db.execute_update(user_query, (
             callback.from_user.id,
@@ -317,6 +319,7 @@ async def confirm_registration(callback: CallbackQuery, state: FSMContext):
 
         if not user_id:
             await callback.message.edit_text("❌ Ошибка создания пользователя")
+            await callback.answer()
             return
 
         # Получаем ID курса по названию
@@ -334,24 +337,57 @@ async def confirm_registration(callback: CallbackQuery, state: FSMContext):
         schedule_rows = db.execute_query(schedule_query, (data['schedule'],))
         schedule_id = schedule_rows[0]['id'] if schedule_rows else 1
 
-        # Создаем регистрацию
+        # ✅ Создаем регистрацию со статусом 'trial' (пробный урок)
         reg_id = db.registrations.create(
             user_id=user_id,
             course_id=course_id,
             training_type_id=training_type_id,
             schedule_id=schedule_id,
-            status='active'
+            status='trial'  # ✅ ИСПРАВЛЕНО: правильный статус для новых регистраций
         )
+
+        print(f"✅ DEBUG: Registration created with ID: {reg_id}")
+
+        # ✅ ДОБАВЛЕНО: Отправляем подтверждение пользователю
+        success_message = (
+            "✅ *Регистрация успешно завершена!*\n\n"
+            f"👤 *Имя:* {data['name']}\n"
+            f"📞 *Телефон:* {data['phone']}\n\n"
+            f"🎓 *Курс:* {data['course']}\n"
+            f"📊 *Тип обучения:* {data['training_type']}\n"
+            f"⏰ *Расписание:* {data['schedule']}\n"
+            f"💰 *Стоимость:* {data['price']}\n\n"
+            "📝 *Ваша заявка отправлена!*\n"
+            "Наш администратор свяжется с вами в ближайшее время для подтверждения пробного урока.\n\n"
+            "Спасибо за обращение! 🙏"
+        )
+
+        await callback.message.edit_text(
+            success_message,
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard()
+        )
+
+        # ✅ ДОБАВЛЕНО: Отправляем уведомление администраторам
+        bot = callback.bot  # Получаем экземпляр бота из callback
+        await send_registration_to_admins(bot, data, callback.from_user)
+
+        # ✅ ДОБАВЛЕНО: Очищаем состояние
+        await state.clear()
+        await callback.answer("✅ Регистрация завершена!")
+
+        logger.info(f"✅ User {callback.from_user.id} registered successfully with registration ID: {reg_id}")
 
     except Exception as e:
         logger.error(f"Ошибка подтверждения регистрации: {e}", exc_info=True)
         print(f"❌ DEBUG: Exception in confirm_registration: {e}")
+
         await callback.message.edit_text(
             "❌ Произошла ошибка при сохранении. Попробуйте позже.",
             reply_markup=get_main_keyboard()
         )
         await state.clear()
-        await callback.answer()
+        await callback.answer("❌ Ошибка регистрации")
 
 
 async def send_registration_to_admins(bot, data, user):
@@ -361,7 +397,7 @@ async def send_registration_to_admins(bot, data, user):
             "🆕 *НОВАЯ РЕГИСТРАЦИЯ!*\n\n"
             f"👤 *Имя:* {data['name']}\n"
             f"📞 *Телефон:* {data['phone']}\n"
-            f"🆔 *Telegram ID:* {user.id}\n"
+            f"🆔 *Telegram ID:* `{user.id}`\n"  # ✅ Форматирование для копирования
             f"📝 *Username:* @{user.username or 'не указан'}\n\n"
             f"🎓 *Курс:* {data['course']}\n"
             f"📊 *Тип обучения:* {data['training_type']}\n"
@@ -370,14 +406,100 @@ async def send_registration_to_admins(bot, data, user):
             f"🕒 *Время:* {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
         )
 
+        # ✅ ДОБАВЛЕНО: Счетчик успешных отправок
+        sent_count = 0
+
         for admin_id in config.ADMIN_IDS:
             try:
                 await bot.send_message(admin_id, message_text, parse_mode="Markdown")
+                sent_count += 1
+                logger.info(f"✅ Notification sent to admin {admin_id}")
             except Exception as e:
-                logger.error(f"Ошибка отправки администратору {admin_id}: {e}")
+                logger.error(f"❌ Ошибка отправки администратору {admin_id}: {e}")
+
+        logger.info(f"✅ Registration notification sent to {sent_count}/{len(config.ADMIN_IDS)} admins")
 
     except Exception as e:
-        logger.error(f"Ошибка send_registration_to_admins: {e}")
+        logger.error(f"❌ Ошибка send_registration_to_admins: {e}", exc_info=True)
+
+
+async def send_registration_to_admins(bot, data, user):
+    """Отправка уведомления о новой регистрации администраторам"""
+    try:
+        message_text = (
+            "🆕 *НОВАЯ РЕГИСТРАЦИЯ!*\n\n"
+            f"👤 *Имя:* {data['name']}\n"
+            f"📞 *Телефон:* {data['phone']}\n"
+            f"🆔 *Telegram ID:* `{user.id}`\n"  # ✅ Форматирование для копирования
+            f"📝 *Username:* @{user.username or 'не указан'}\n\n"
+            f"🎓 *Курс:* {data['course']}\n"
+            f"📊 *Тип обучения:* {data['training_type']}\n"
+            f"⏰ *Расписание:* {data['schedule']}\n"
+            f"💰 *Стоимость:* {data['price']}\n\n"
+            f"🕒 *Время:* {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        )
+
+        # ✅ ДОБАВЛЕНО: Счетчик успешных отправок
+        sent_count = 0
+
+        for admin_id in config.ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, message_text, parse_mode="Markdown")
+                sent_count += 1
+                logger.info(f"✅ Notification sent to admin {admin_id}")
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки администратору {admin_id}: {e}")
+
+        logger.info(f"✅ Registration notification sent to {sent_count}/{len(config.ADMIN_IDS)} admins")
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка send_registration_to_admins: {e}", exc_info=True)
+
+
+async def send_registration_to_admins(bot, data, user, reg_id):
+    """Отправка уведомления о новой регистрации администраторам"""
+    try:
+        message_text = (
+            f"🆕 *НОВАЯ РЕГИСТРАЦИЯ #{reg_id}*\n\n"
+            f"👤 *Имя:* {data['name']}\n"
+            f"📞 *Телефон:* {data['phone']}\n"
+            f"🆔 *Telegram ID:* `{user.id}`\n"
+            f"📝 *Username:* @{user.username or 'не указан'}\n\n"
+            f"🎓 *Курс:* {data['course']}\n"
+            f"📊 *Тип обучения:* {data['training_type']}\n"
+            f"⏰ *Расписание:* {data['schedule']}\n"
+            f"💰 *Стоимость:* {data['price']}\n\n"
+            f"🕒 *Время:* {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        )
+
+        sent_count = 0
+        failed_count = 0
+
+        for admin_id in config.ADMIN_IDS:
+            try:
+                print(f"  📤 Отправка администратору {admin_id}...")
+                await bot.send_message(admin_id, message_text, parse_mode="Markdown")
+                sent_count += 1
+                print(f"  ✅ Уведомление отправлено админу {admin_id}")
+                logger.info(f"✅ Notification sent to admin {admin_id}")
+            except aiogram.exceptions.TelegramForbiddenError:
+                failed_count += 1
+                print(f"  ❌ Админ {admin_id} заблокировал бота")
+                logger.error(f"❌ Admin {admin_id} blocked the bot")
+            except Exception as e:
+                failed_count += 1
+                print(f"  ❌ Ошибка отправки админу {admin_id}: {e}")
+                logger.error(f"❌ Error sending to admin {admin_id}: {e}")
+
+        print(f"\n📊 Статистика отправки администраторам:")
+        print(f"  ✅ Успешно: {sent_count}/{len(config.ADMIN_IDS)}")
+        print(f"  ❌ Ошибок: {failed_count}/{len(config.ADMIN_IDS)}")
+
+        logger.info(f"✅ Registration notification sent to {sent_count}/{len(config.ADMIN_IDS)} admins")
+
+    except Exception as e:
+        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА в send_registration_to_admins: {e}")
+        logger.error(f"❌ Critical error in send_registration_to_admins: {e}", exc_info=True)
 
 
 @user_router.callback_query(F.data == "leave_feedback")
@@ -580,63 +702,236 @@ async def send_feedback_to_admins(bot, feedback_data):
 # Функционал кабинета
 @user_router.callback_query(F.data == "show_cabinet")
 async def show_cabinet(callback: CallbackQuery):
-    # Получаем user_id по telegram_id
-    query_user = "SELECT id FROM users WHERE telegram_id = ?"
-    user_rows = db.execute_query(query_user, (callback.from_user.id,))
-    if not user_rows:
-        await callback.message.edit_text("Вы еще не зарегистрированы.", reply_markup=get_main_keyboard())
-        return
+    """Показать личный кабинет пользователя с детальным логированием"""
+    try:
+        print("\n" + "=" * 70)
+        print(f"📱 ОТКРЫТИЕ ЛИЧНОГО КАБИНЕТА")
+        print(f"👤 User ID: {callback.from_user.id}")
+        print(f"📝 Username: @{callback.from_user.username or 'N/A'}")
+        print("=" * 70)
 
-    user_id = user_rows[0]['id']
+        # ============================================
+        # ШАГ 1: Получение user_id из БД
+        # ============================================
+        print("\n📌 ШАГ 1: Поиск пользователя в БД...")
+        query_user = "SELECT id, full_name, phone FROM users WHERE telegram_id = ?"
+        user_rows = db.execute_query(query_user, (callback.from_user.id,))
 
-    # Получаем регистрации пользователя
-    registrations = db.registrations.get_by_user_id(user_id)
-    if not registrations:
+        if not user_rows:
+            print("❌ Пользователь не найден в БД")
+            await callback.message.edit_text(
+                "❌ Вы еще не зарегистрированы.\n\n"
+                "Чтобы записаться на курс, нажмите «📝 Новая запись»!",
+                reply_markup=get_main_keyboard()
+            )
+            await callback.answer("Сначала нужно зарегистрироваться")
+            return
+
+        user_id = user_rows[0]['id']
+        user_name = user_rows[0].get('full_name', 'Не указано')
+        user_phone = user_rows[0].get('phone', 'Не указано')
+
+        print(f"✅ Пользователь найден:")
+        print(f"  - ID в БД: {user_id}")
+        print(f"  - Имя: {user_name}")
+        print(f"  - Телефон: {user_phone}")
+
+        # ============================================
+        # ШАГ 2: Получение регистраций пользователя
+        # ============================================
+        print(f"\n📌 ШАГ 2: Поиск регистраций для user_id={user_id}...")
+
+        try:
+            # ✅ ИСПРАВЛЕНО: Используем прямой SQL запрос вместо метода репозитория
+            query_registrations = """
+                                  SELECT r.id, \
+                                         r.status_code, \
+                                         r.created_at, \
+                                         r.updated_at, \
+                                         c.name  as course_name, \
+                                         tt.name as training_type_name, \
+                                         s.name  as schedule_name, \
+                                         CASE \
+                                             WHEN tt.name LIKE '%Групповые%80%' THEN c.price_group \
+                                             WHEN tt.name LIKE '%Индивидуальное%' THEN c.price_individual \
+                                             WHEN tt.name LIKE '%Групповые%60%' THEN c.price_group \
+                                             ELSE c.price_group \
+                                             END as price
+                                  FROM registrations r
+                                           LEFT JOIN courses c ON r.course_id = c.id
+                                           LEFT JOIN training_types tt ON r.training_type_id = tt.id
+                                           LEFT JOIN schedules s ON r.schedule_id = s.id
+                                  WHERE r.user_id = ?
+                                  ORDER BY r.created_at DESC \
+                                  """
+
+            registrations = db.execute_query(query_registrations, (user_id,))
+
+            print(f"✅ Найдено регистраций: {len(registrations) if registrations else 0}")
+
+            if registrations:
+                print(f"📋 Список регистраций:")
+                for reg in registrations:
+                    print(f"  - Регистрация #{reg.get('id', 'N/A')}")
+                    print(f"    Курс: {reg.get('course_name', 'N/A')}")
+                    print(f"    Статус: {reg.get('status_code', 'N/A')}")
+                    print(f"    Дата: {reg.get('created_at', 'N/A')}")
+
+        except Exception as e:
+            print(f"❌ Ошибка получения регистраций: {e}")
+            registrations = []
+
+        # ============================================
+        # ШАГ 3: Формирование и отправка ответа
+        # ============================================
+        print(f"\n📌 ШАГ 3: Формирование ответа пользователю...")
+
+        if not registrations:
+            print("ℹ️ У пользователя нет регистраций")
+            await callback.message.edit_text(
+                f"👤 *Личный кабинет*\n\n"
+                f"📝 Имя: {user_name}\n"
+                f"📞 Телефон: {user_phone}\n\n"
+                f"У вас пока нет активных записей.\n\n"
+                f"Хотите записаться на курс? Нажмите «📝 Новая запись»!",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard()
+            )
+            await callback.answer("У вас пока нет записей")
+            print("✅ Сообщение отправлено")
+            return
+
+        # Формируем текст с информацией о регистрациях
+        cabinet_text = f"👤 *Личный кабинет*\n\n"
+        cabinet_text += f"📝 Имя: {user_name}\n"
+        cabinet_text += f"📞 Телефон: {user_phone}\n"
+        cabinet_text += f"📊 Записей: {len(registrations)}\n\n"
+        cabinet_text += f"📋 *Ваши записи:*\n\n"
+
+        for idx, reg in enumerate(registrations, 1):
+            status_emoji = {
+                'active': '🟢',
+                'trial': '🟡',
+                'studying': '🔵',
+                'frozen': '⚪',
+                'waiting_payment': '🟠',
+                'completed': '🟣'
+            }.get(reg.get('status_code', 'trial'), '⚫')
+
+            status_name = config.STATUSES.get(reg.get('status_code', 'trial'), 'Неизвестно')
+
+            # Форматируем цену
+            price = reg.get('price')
+            price_text = f"{price:,}".replace(',', ' ') + ' сум' if price else 'Не указана'
+
+            cabinet_text += f"{idx}. {status_emoji} *Запись #{reg.get('id', 'N/A')}*\n"
+            cabinet_text += f"   🎓 {reg.get('course_name', 'N/A')}\n"
+            cabinet_text += f"   📊 {reg.get('training_type_name', 'N/A')}\n"
+            cabinet_text += f"   ⏰ {reg.get('schedule_name', 'N/A')}\n"
+            cabinet_text += f"   💰 {price_text}\n"
+            cabinet_text += f"   📌 Статус: {status_name}\n"
+
+            # Форматируем дату
+            created_at = reg.get('created_at', '')
+            if created_at:
+                # Обрезаем до даты, если есть время
+                date_only = created_at.split()[0] if ' ' in created_at else created_at
+                cabinet_text += f"   📅 {date_only}\n\n"
+            else:
+                cabinet_text += "\n"
+
+        print(f"✅ Текст сформирован ({len(cabinet_text)} символов)")
+
         await callback.message.edit_text(
-            "У вас пока нет активных записей.\n\nХотите записаться на курс? Нажмите «📝 Новая запись»!",
-            reply_markup=get_main_keyboard()
+            cabinet_text,
+            parse_mode="Markdown",
+            reply_markup=get_cabinet_keyboard(has_registrations=True)
         )
-        return
+        await callback.answer("Личный кабинет")
 
-    for reg in registrations:
-        cabinet_text = (
-            f"📋 *Ваша запись #{reg['id']}:*\n\n"
-            f"🎯 *Курс:* {reg['course_name']}\n"
-            f"📊 *Тип:* {reg['training_type_name']}\n"
-            f"⏰ *Расписание:* {reg['schedule_name']}\n"
-            f"💰 *Стоимость:* {reg['price']}\n"
-            f"📅 *Дата записи:* {reg['created_at']}\n"
-        )
-        await callback.message.answer(cabinet_text, parse_mode="Markdown")
+        print("✅ Кабинет успешно отображен")
+        print("=" * 70 + "\n")
 
-    await callback.message.answer("Дополнительные функции:", reply_markup=get_cabinet_keyboard())
-    await callback.answer()
+        logger.info(f"✅ User {callback.from_user.id} opened cabinet with {len(registrations)} registrations")
+
+    except Exception as e:
+        print("\n" + "=" * 70)
+        print(f"❌ ❌ ❌ ОШИБКА ОТКРЫТИЯ КАБИНЕТА!")
+        print(f"Тип ошибки: {type(e).__name__}")
+        print(f"Сообщение: {str(e)}")
+        print("=" * 70 + "\n")
+
+        logger.error(f"❌ Error in show_cabinet: {e}", exc_info=True)
+
+        try:
+            await callback.message.edit_text(
+                "❌ Произошла ошибка при открытии кабинета.\n\n"
+                "Попробуйте позже или обратитесь в поддержку.",
+                reply_markup=get_main_keyboard()
+            )
+        except:
+            # Если не можем отредактировать сообщение, отправим новое
+            await callback.message.answer(
+                "❌ Произошла ошибка при открытии кабинета.\n\n"
+                "Попробуйте позже или обратитесь в поддержку.",
+                reply_markup=get_main_keyboard()
+            )
+
+        await callback.answer("Ошибка открытия кабинета")
 
 
 @user_router.callback_query(F.data == "show_materials")
 async def show_materials(callback: CallbackQuery):
-    # Получаем user_id по telegram_id
-    query_user = "SELECT id FROM users WHERE telegram_id = ?"
-    user_rows = db.execute_query(query_user, (callback.from_user.id,))
-    if not user_rows:
-        await callback.message.edit_text("Вы еще не зарегистрированы.", reply_markup=get_main_keyboard())
-        return
+    """Показать материалы курса"""
+    try:
+        # Получаем user_id
+        query_user = "SELECT id FROM users WHERE telegram_id = ?"
+        user_rows = db.execute_query(query_user, (callback.from_user.id,))
 
-    user_id = user_rows[0]['id']
+        if not user_rows:
+            await callback.message.edit_text(
+                "❌ Вы еще не зарегистрированы.",
+                reply_markup=get_main_keyboard()
+            )
+            await callback.answer()
+            return
 
-    # Получаем регистрации пользователя
-    registrations = db.registrations.get_by_user_id(user_id)
+        user_id = user_rows[0]['id']
 
-    if not registrations:
-        await callback.message.edit_text("У вас нет активных курсов.", reply_markup=get_main_keyboard())
-        return
+        # ✅ ИСПРАВЛЕНО: Прямой SQL запрос
+        query = """
+                SELECT r.*, c.name as course_name
+                FROM registrations r
+                         LEFT JOIN courses c ON r.course_id = c.id
+                WHERE r.user_id = ?
+                ORDER BY r.created_at DESC \
+                """
+        registrations = db.execute_query(query, (user_id,))
 
-    course = registrations[0].course
-    await callback.message.edit_text(
-        f"📚 Материалы по курсу {course}:",
-        reply_markup=get_materials_keyboard(course)
-    )
-    await callback.answer()
+        if not registrations:
+            await callback.message.edit_text(
+                "❌ У вас нет активных курсов.",
+                reply_markup=get_main_keyboard()
+            )
+            await callback.answer()
+            return
+
+        # Берем первый курс
+        course = registrations[0].get('course_name', 'Неизвестный курс')
+
+        await callback.message.edit_text(
+            f"📚 Материалы по курсу {course}:",
+            reply_markup=get_materials_keyboard(course)
+        )
+        await callback.answer()
+
+    except Exception as e:
+        logger.error(f"Ошибка в show_materials: {e}", exc_info=True)
+        await callback.message.edit_text(
+            "❌ Произошла ошибка. Попробуйте позже.",
+            reply_markup=get_main_keyboard()
+        )
+        await callback.answer()
 
 
 @user_router.callback_query(F.data == "add_reminder")
@@ -690,92 +985,148 @@ async def show_reminders(callback: CallbackQuery):
 @user_router.callback_query(F.data == "show_progress")
 async def show_progress(callback: CallbackQuery):
     """Показать прогресс обучения"""
-    # Получаем user_id по telegram_id
-    query_user = "SELECT id FROM users WHERE telegram_id = ?"
-    user_rows = db.execute_query(query_user, (callback.from_user.id,))
-    if not user_rows:
-        await callback.message.edit_text("Вы еще не зарегистрированы.", reply_markup=get_main_keyboard())
-        return
+    try:
+        # Получаем user_id
+        query_user = "SELECT id FROM users WHERE telegram_id = ?"
+        user_rows = db.execute_query(query_user, (callback.from_user.id,))
 
-    user_id = user_rows[0]['id']
+        if not user_rows:
+            await callback.message.edit_text(
+                "❌ Вы еще не зарегистрированы.",
+                reply_markup=get_main_keyboard()
+            )
+            await callback.answer()
+            return
 
-    # Получаем регистрации пользователя
-    registrations = db.registrations.get_by_user_id(user_id)
+        user_id = user_rows[0]['id']
 
-    if not registrations:
+        # ✅ ИСПРАВЛЕНО: Прямой SQL запрос
+        query = """
+                SELECT r.*, c.name as course_name
+                FROM registrations r
+                         LEFT JOIN courses c ON r.course_id = c.id
+                WHERE r.user_id = ?
+                ORDER BY r.created_at DESC \
+                """
+        registrations = db.execute_query(query, (user_id,))
+
+        if not registrations:
+            await callback.message.edit_text(
+                "❌ У вас нет активных курсов для отображения прогресса.",
+                reply_markup=get_main_keyboard()
+            )
+            await callback.answer()
+            return
+
+        # Формируем текст прогресса
+        progress_text = "📊 *Ваш прогресс:*\n\n"
+
+        for reg in registrations:
+            course_name = reg.get('course_name', 'Неизвестный курс')
+            status = reg.get('status_code', 'trial')
+
+            # Эмодзи для статуса
+            status_emoji = {
+                'trial': '🟡',
+                'studying': '🔵',
+                'completed': '🟣',
+                'frozen': '⚪'
+            }.get(status, '⚫')
+
+            progress_text += f"{status_emoji} *{course_name}*\n"
+            progress_text += f"   Статус: {config.STATUSES.get(status, status)}\n\n"
+
         await callback.message.edit_text(
-            "У вас пока нет активных записей для отслеживания прогресса.",
+            progress_text,
+            parse_mode="Markdown",
+            reply_markup=get_progress_keyboard()
+        )
+        await callback.answer()
+
+    except Exception as e:
+        logger.error(f"Ошибка в show_progress: {e}", exc_info=True)
+        await callback.message.edit_text(
+            "❌ Произошла ошибка. Попробуйте позже.",
             reply_markup=get_main_keyboard()
         )
-        return
-
-    progress_text = "📊 *Ваш прогресс:*\n\n"
-
-    for reg in registrations:
-        progress_value = getattr(reg, 'progress', 0.0) or 0.0
-        attendance_value = getattr(reg, 'attendance', 0) or 0
-        grade_value = getattr(reg, 'grade', 'Нет оценки')
-
-        progress_text += (
-            f"📚 *{reg['course_name']}*\n"
-            f"📈 Прогресс: {progress_value:.1f}%\n"
-            f"📅 Посещаемость: {attendance_value} занятий\n"
-        )
-
-        if grade_value and grade_value != 'Нет оценки':
-            progress_text += f"⭐ Оценка: {grade_value}\n"
-
-        progress_text += "\n"
-
-    await callback.message.edit_text(
-        progress_text,
-        parse_mode="Markdown",
-        reply_markup=get_progress_keyboard()
-    )
-    await callback.answer()
+        await callback.answer()
 
 
 @user_router.callback_query(F.data == "start_quiz")
 async def start_quiz(callback: CallbackQuery, state: FSMContext):
     """Начать тест/викторину"""
-    # Получаем user_id по telegram_id
-    query_user = "SELECT id FROM users WHERE telegram_id = ?"
-    user_rows = db.execute_query(query_user, (callback.from_user.id,))
-    if not user_rows:
-        await callback.message.edit_text("Вы еще не зарегистрированы.", reply_markup=get_main_keyboard())
-        return
+    try:
+        # Получаем user_id
+        query_user = "SELECT id FROM users WHERE telegram_id = ?"
+        user_rows = db.execute_query(query_user, (callback.from_user.id,))
 
-    user_id = user_rows[0]['id']
+        if not user_rows:
+            await callback.message.edit_text(
+                "❌ Вы еще не зарегистрированы.",
+                reply_markup=get_main_keyboard()
+            )
+            await callback.answer()
+            return
 
-    # Получаем регистрации пользователя
-    registrations = db.registrations.get_by_user_id(user_id)
+        user_id = user_rows[0]['id']
 
-    if not registrations:
+        # ✅ ИСПРАВЛЕНО: Прямой SQL запрос
+        query = """
+                SELECT r.*, c.name as course_name
+                FROM registrations r
+                         LEFT JOIN courses c ON r.course_id = c.id
+                WHERE r.user_id = ?
+                ORDER BY r.created_at DESC \
+                """
+        registrations = db.execute_query(query, (user_id,))
+
+        if not registrations:
+            await callback.message.edit_text(
+                "❌ У вас нет активных курсов для прохождения тестов.",
+                reply_markup=get_main_keyboard()
+            )
+            await callback.answer()
+            return
+
+        # Берем первый курс
+        course_name = registrations[0].get('course_name', '')
+
+        # Проверяем, есть ли тесты для этого курса
+        if course_name not in config.QUIZZES:
+            await callback.message.edit_text(
+                f"❌ Для курса {course_name} пока нет доступных тестов.",
+                reply_markup=get_cabinet_keyboard()
+            )
+            await callback.answer()
+            return
+
+        # Начинаем тест
+        questions = config.QUIZZES[course_name]
+        await state.update_data(
+            course=course_name,
+            questions=questions,
+            current_question=0,
+            correct_answers=0
+        )
+
+        # Показываем первый вопрос
+        question = questions[0]
         await callback.message.edit_text(
-            "❌ У вас нет активных курсов для прохождения теста.",
+            f"🎯 *Тест: {course_name}*\n\n"
+            f"Вопрос 1 из {len(questions)}:\n\n"
+            f"{question['question']}",
+            parse_mode="Markdown",
+            reply_markup=get_quiz_question_keyboard(0, question['options'])
+        )
+        await callback.answer()
+
+    except Exception as e:
+        logger.error(f"Ошибка в start_quiz: {e}", exc_info=True)
+        await callback.message.edit_text(
+            "❌ Произошла ошибка. Попробуйте позже.",
             reply_markup=get_main_keyboard()
         )
-        return
-
-    course = registrations[0].course
-
-    if course not in config.QUIZZES:
-        await callback.message.edit_text(
-            f"❌ Для курса '{course}' пока нет доступных тестов.",
-            reply_markup=get_cabinet_keyboard(has_registrations=True)
-        )
-        return
-
-    # Начинаем тест с первого вопроса
-    await state.update_data(
-        quiz_course=course,
-        quiz_index=0,
-        quiz_correct=0,
-        quiz_total=len(config.QUIZZES[course])
-    )
-
-    await show_quiz_question(callback.message, state, 0, course)
-    await callback.answer()
+        await callback.answer()
 
 
 async def show_quiz_question(message, state: FSMContext, question_index: int, course: str):
@@ -894,7 +1245,13 @@ async def start_feedback(callback: CallbackQuery, state: FSMContext):
     user_id = user_rows[0]['id']
 
     # Получаем регистрации пользователя
-    registrations = db.registrations.get_by_user_id(user_id)
+    db.execute_query("""
+                     SELECT r.*, c.name as course_name
+                     FROM registrations r
+                              LEFT JOIN courses c ON r.course_id = c.id
+                     WHERE r.user_id = ?
+                     ORDER BY r.created_at DESC
+                     """, (user_id,))
 
     if not registrations:
         await callback.message.edit_text(
@@ -1219,7 +1576,13 @@ async def show_courses(callback: CallbackQuery):
             user_id = user_rows[0]['id']
 
             # Получаем регистрации пользователя
-            registrations = db.registrations.get_by_user_id(user_id)
+            db.execute_query("""
+                             SELECT r.*, c.name as course_name
+                             FROM registrations r
+                                      LEFT JOIN courses c ON r.course_id = c.id
+                             WHERE r.user_id = ?
+                             ORDER BY r.created_at DESC
+                             """, (user_id,))
 
             if not registrations:
                 await callback.message.edit_text(
@@ -1477,46 +1840,62 @@ async def show_my_progress(callback: CallbackQuery):
 
 @user_router.callback_query(F.data == "my_schedule")
 async def show_my_schedule(callback: CallbackQuery):
-    """✅ ИСПРАВЛЕНО: Показать расписание занятий"""
+    """Показать расписание пользователя"""
     try:
-        # Получаем пользователя (✅ ИСПРАВЛЕНА ЗАКРЫВАЮЩАЯ СКОБКА)
-        user = db.get_user_by_telegram_id(callback.from_user.id)
+        # ✅ ИСПРАВЛЕНО: Прямой SQL запрос
+        query = "SELECT * FROM users WHERE telegram_id = ?"
+        users = db.execute_query(query, (callback.from_user.id,))
+        user = users[0] if users else None
 
         if not user:
             await callback.message.edit_text(
-                "❌ Пользователь не найден",
+                "❌ Пользователь не найден. Пожалуйста, сначала зарегистрируйтесь.",
+                reply_markup=get_main_keyboard()
+            )
+            await callback.answer()
+            return
+
+        user_id = user['id']
+
+        # Получаем регистрации пользователя
+        query_reg = """
+                    SELECT r.*, \
+                           c.name as course_name, \
+                           s.name as schedule_name, \
+                           s.time_start, \
+                           s.time_end
+                    FROM registrations r
+                             LEFT JOIN courses c ON r.course_id = c.id
+                             LEFT JOIN schedules s ON r.schedule_id = s.id
+                    WHERE r.user_id = ?
+                    ORDER BY r.created_at DESC \
+                    """
+        registrations = db.execute_query(query_reg, (user_id,))
+
+        if not registrations:
+            await callback.message.edit_text(
+                "❌ У вас нет активных записей с расписанием.",
                 reply_markup=get_cabinet_keyboard()
             )
             await callback.answer()
             return
 
-        # Получаем активные регистрации
-        registrations = db.get_registrations_by_user_id(user.id)
-        active_registrations = [r for r in registrations if r.status in ['active', 'studying']]
+        # Формируем текст расписания
+        schedule_text = "📅 *Ваше расписание:*\n\n"
 
-        if not active_registrations:
-            await callback.message.edit_text(
-                "📅 *Ваше расписание*\n\n"
-                "У вас пока нет активных курсов.\n"
-                "Запишитесь на курс, чтобы увидеть расписание!",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="📝 Записаться на курс", callback_data="new_registration")],
-                    [InlineKeyboardButton(text="◀️ Назад", callback_data="show_cabinet")]
-                ])
-            )
-            await callback.answer()
-            return
+        for reg in registrations:
+            course_name = reg.get('course_name', 'Неизвестный курс')
+            schedule_name = reg.get('schedule_name', 'Не указано')
+            time_start = reg.get('time_start', '')
+            time_end = reg.get('time_end', '')
 
-        # Формируем расписание
-        schedule_text = "📅 *Ваше расписание занятий:*\n\n"
+            schedule_text += f"📚 *{course_name}*\n"
+            schedule_text += f"   ⏰ {schedule_name}\n"
 
-        for idx, reg in enumerate(active_registrations, 1):
-            schedule_text += (
-                f"*{idx}. {reg['course_name']}*\n"
-                f"   ⏰ {reg['schedule_name']}\n"
-                f"   📊 {reg['training_type_name']}\n\n"
-            )
+            if time_start and time_end:
+                schedule_text += f"   🕐 {time_start} - {time_end}\n"
+
+            schedule_text += "\n"
 
         await callback.message.edit_text(
             schedule_text,
@@ -1528,8 +1907,8 @@ async def show_my_schedule(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Ошибка в show_my_schedule: {e}", exc_info=True)
         await callback.message.edit_text(
-            "❌ Произошла ошибка при загрузке расписания",
-            reply_markup=get_cabinet_keyboard()
+            "❌ Произошла ошибка. Попробуйте позже.",
+            reply_markup=get_main_keyboard()
         )
         await callback.answer()
 

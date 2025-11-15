@@ -338,17 +338,6 @@ def get_progress_keyboard():
     ])
     return keyboard
 
-
-def get_admin_keyboard():
-    """Клавиатура для администратора"""
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="👥 Управление записями", callback_data="admin_registrations")],
-        [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
-        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="admin_settings")]
-    ])
-    return keyboard
-
 # ============ ЭКСПОРТ ============
 
 __all__ = [
