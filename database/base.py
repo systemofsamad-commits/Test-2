@@ -1,19 +1,19 @@
 """
-Base database Class
+Base database Class - ИСПРАВЛЕНО ДЛЯ PYTHON 3.8+
 Базовый класс для работы с SQLite
+
+✅ ИСПРАВЛЕНО: Добавлен импорт Optional, Tuple из typing
 """
 
 import sqlite3
 import logging
 from contextlib import contextmanager
-from typing import List, Dict, Any
-# ✅ ИСПРАВЛЕНО: Удален импорт из handlers.user_handlers, который создавал циклический импорт
-# from handlers.user_handlers import db  # ❌ УДАЛЕНО
+from typing import List, Dict, Any, Optional, Tuple  # ✅ ДОБАВЛЕНО Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 
-def _init_reference_data(cursor):
+def _init_reference_data(cursor: sqlite3.Cursor) -> None:
     """Инициализировать справочные данные"""
     # Статусы
     statuses = [
@@ -25,11 +25,9 @@ def _init_reference_data(cursor):
         ('completed', 'Завершили', 'Успешно завершили курс')
     ]
     cursor.executemany("""
-                       INSERT
-                           OR IGNORE
-                       INTO student_statuses (code, name, description)
-                       VALUES (?, ?, ?)
-                       """, statuses)
+        INSERT OR IGNORE INTO student_statuses (code, name, description)
+        VALUES (?, ?, ?)
+    """, statuses)
 
     # Типы обучения
     training_types = [
@@ -38,11 +36,9 @@ def _init_reference_data(cursor):
         ('Групповые занятия (60 минут)', 'Занятия в группе до 15 человек')
     ]
     cursor.executemany("""
-                       INSERT
-                           OR IGNORE
-                       INTO training_types (name, description)
-                       VALUES (?, ?)
-                       """, training_types)
+        INSERT OR IGNORE INTO training_types (name, description)
+        VALUES (?, ?)
+    """, training_types)
 
     # Расписания
     schedules = [
@@ -51,11 +47,9 @@ def _init_reference_data(cursor):
         ('Вечерняя группа', '18:00', '20:00')
     ]
     cursor.executemany("""
-                       INSERT
-                           OR IGNORE
-                       INTO schedules (name, time_start, time_end)
-                       VALUES (?, ?, ?)
-                       """, schedules)
+        INSERT OR IGNORE INTO schedules (name, time_start, time_end)
+        VALUES (?, ?, ?)
+    """, schedules)
 
     # Курсы
     courses = [
@@ -63,12 +57,248 @@ def _init_reference_data(cursor):
         ('🇬🇧 Английский язык', 'Изучение английского языка с нуля', 12, 48, 450000, 1200000, 'beginner')
     ]
     cursor.executemany("""
-                       INSERT
-                           OR IGNORE
-                       INTO courses (name, description, duration_months, lessons_count,
-                                     price_group, price_individual, level)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)
-                       """, courses)
+        INSERT OR IGNORE INTO courses (name, description, duration_months, lessons_count,
+                                       price_group, price_individual, level)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, courses)
+
+
+def _create_tables(cursor: sqlite3.Cursor) -> None:
+    """Создать все таблицы"""
+
+    # Пользователи
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER UNIQUE NOT NULL,
+            username TEXT,
+            full_name TEXT,
+            phone TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Курсы
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS courses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            description TEXT,
+            duration_months INTEGER,
+            lessons_count INTEGER,
+            price_group INTEGER,
+            price_individual INTEGER,
+            level TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN DEFAULT 1
+        )
+    """)
+
+    # Преподаватели
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS teachers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER UNIQUE NOT NULL,
+            full_name TEXT NOT NULL,
+            phone TEXT,
+            email TEXT,
+            specialization TEXT,
+            experience_years INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN DEFAULT 1,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
+    # Статусы студентов (справочник)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS student_statuses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT
+        )
+    """)
+
+    # Типы обучения (справочник)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS training_types (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            description TEXT
+        )
+    """)
+
+    # Расписания (справочник)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS schedules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            time_start TEXT,
+            time_end TEXT
+        )
+    """)
+
+    # Регистрации
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS registrations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            full_name TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            course_id INTEGER NOT NULL,
+            training_type_id INTEGER,
+            schedule_id INTEGER,
+            status_code TEXT DEFAULT 'trial',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            trial_lesson_time TIMESTAMP,
+            consultation_time TIMESTAMP,
+            notified BOOLEAN DEFAULT 0,
+            reminder_sent BOOLEAN DEFAULT 0,
+            notes TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (course_id) REFERENCES courses(id),
+            FOREIGN KEY (training_type_id) REFERENCES training_types(id),
+            FOREIGN KEY (schedule_id) REFERENCES schedules(id),
+            FOREIGN KEY (status_code) REFERENCES student_statuses(code)
+        )
+    """)
+
+    # Студенты
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS students (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER UNIQUE NOT NULL,
+            registration_id INTEGER,
+            full_name TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            student_code TEXT UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN DEFAULT 1,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (registration_id) REFERENCES registrations(id)
+        )
+    """)
+
+    # Администраторы
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS admins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER UNIQUE NOT NULL,
+            username TEXT,
+            full_name TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN DEFAULT 1
+        )
+    """)
+
+    # Группы
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            course_id INTEGER NOT NULL,
+            teacher_id INTEGER,
+            schedule_id INTEGER,
+            max_students INTEGER DEFAULT 10,
+            current_students INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN DEFAULT 1,
+            FOREIGN KEY (course_id) REFERENCES courses(id),
+            FOREIGN KEY (teacher_id) REFERENCES teachers(id),
+            FOREIGN KEY (schedule_id) REFERENCES schedules(id)
+        )
+    """)
+
+    # Студенты в группах
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS student_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id INTEGER NOT NULL,
+            group_id INTEGER NOT NULL,
+            enrolled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status TEXT DEFAULT 'active',
+            FOREIGN KEY (student_id) REFERENCES students(id),
+            FOREIGN KEY (group_id) REFERENCES groups(id),
+            UNIQUE(student_id, group_id)
+        )
+    """)
+
+    # Уроки
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lessons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id INTEGER NOT NULL,
+            teacher_id INTEGER NOT NULL,
+            topic TEXT NOT NULL,
+            lesson_date TIMESTAMP NOT NULL,
+            duration_minutes INTEGER DEFAULT 60,
+            materials TEXT,
+            homework TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (group_id) REFERENCES groups(id),
+            FOREIGN KEY (teacher_id) REFERENCES teachers(id)
+        )
+    """)
+
+    # Посещаемость
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS attendance (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lesson_id INTEGER NOT NULL,
+            student_id INTEGER NOT NULL,
+            status TEXT DEFAULT 'present',
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (lesson_id) REFERENCES lessons(id),
+            FOREIGN KEY (student_id) REFERENCES students(id),
+            UNIQUE(lesson_id, student_id)
+        )
+    """)
+
+    # Отзывы
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            registration_id INTEGER,
+            course_id INTEGER,
+            teacher_id INTEGER,
+            rating INTEGER CHECK(rating >= 1 AND rating <= 5),
+            comment TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (registration_id) REFERENCES registrations(id),
+            FOREIGN KEY (course_id) REFERENCES courses(id),
+            FOREIGN KEY (teacher_id) REFERENCES teachers(id)
+        )
+    """)
+
+    # Напоминания
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS reminders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            due_date TIMESTAMP NOT NULL,
+            sent BOOLEAN DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
+    # Индексы
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_registrations_user ON registrations(user_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_registrations_status ON registrations(status_code)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_students_user ON students(user_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_student_groups_student ON student_groups(student_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_student_groups_group ON student_groups(group_id)")
 
 
 class Database:
@@ -89,810 +319,50 @@ class Database:
         self._lessons = None
         self._feedback = None
         self._reminders = None
+        self._users = None
 
-    def _init_schema(self):
+    def _init_schema(self) -> None:
         """Инициализировать схему БД (если не существует)"""
         try:
             with self.get_connection() as conn:
-                # Проверяем существование основных таблиц
                 cursor = conn.cursor()
+
+                # Проверяем существование основных таблиц
                 cursor.execute("""
-                               SELECT name
-                               FROM sqlite_master
-                               WHERE type = 'table'
-                                 AND name = 'users'
-                               """)
-                if not cursor.fetchone():
-                    # БД пустая, нужно создать схему
-                    self.logger.info("Initializing database schema...")
-                    self._create_schema(conn)
+                    SELECT name FROM sqlite_master 
+                    WHERE type='table' AND name='users'
+                """)
+
+                if cursor.fetchone():
+                    self.logger.info("Database already initialized")
+                    return
+
+                _create_tables(cursor)
+                _init_reference_data(cursor)
+                conn.commit()
+                self.logger.info("Database schema created successfully")
+
         except Exception as e:
-            self.logger.error(f"Error initializing schema: {e}")
-
-    def _create_schema(self, conn: sqlite3.Connection):
-        """Создать схему БД из SQL файла или встроенных команд"""
-        # Здесь можно загрузить optimized_schema.sql или создать таблицы программно
-        # Для краткости используем минимальный набор таблиц
-
-        cursor = conn.cursor()
-
-        # Пользователи
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS users
-                       (
-                           id
-                               INTEGER
-                               PRIMARY
-                                   KEY
-                               AUTOINCREMENT,
-                           telegram_id
-                               INTEGER
-                               UNIQUE
-                               NOT
-                                   NULL,
-                           username
-                               TEXT,
-                           full_name
-                               TEXT,
-                           phone
-                               TEXT,
-                           email
-                               TEXT,
-                           created_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP,
-                           updated_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP,
-                           is_active
-                               BOOLEAN
-                               DEFAULT
-                                   1
-                       )
-                       """)
-
-        # Администраторы
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS admins
-                       (
-                           id
-                               INTEGER
-                               PRIMARY
-                                   KEY
-                               AUTOINCREMENT,
-                           user_id
-                               INTEGER
-                               UNIQUE
-                               NOT
-                                   NULL,
-                           username
-                               TEXT,
-                           full_name
-                               TEXT,
-                           created_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP,
-                           is_active
-                               BOOLEAN
-                               DEFAULT
-                                   1,
-                           FOREIGN
-                               KEY
-                               (
-                                user_id
-                                   ) REFERENCES users
-                               (
-                                id
-                                   )
-                       )
-                       """)
-
-        # Курсы
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS courses
-                       (
-                           id
-                               INTEGER
-                               PRIMARY
-                                   KEY
-                               AUTOINCREMENT,
-                           name
-                               TEXT
-                               UNIQUE
-                               NOT
-                                   NULL,
-                           description
-                               TEXT,
-                           duration_months
-                               INTEGER,
-                           lessons_count
-                               INTEGER,
-                           price_group
-                               INTEGER,
-                           price_individual
-                               INTEGER,
-                           level
-                               TEXT,
-                           created_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP,
-                           updated_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP,
-                           is_active
-                               BOOLEAN
-                               DEFAULT
-                                   1
-                       )
-                       """)
-
-        # Преподаватели
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS teachers
-                       (
-                           id
-                               INTEGER
-                               PRIMARY
-                                   KEY
-                               AUTOINCREMENT,
-                           user_id
-                               INTEGER
-                               UNIQUE
-                               NOT
-                                   NULL,
-                           full_name
-                               TEXT
-                               NOT
-                                   NULL,
-                           phone
-                               TEXT,
-                           email
-                               TEXT,
-                           specialization
-                               TEXT,
-                           experience_years
-                               INTEGER,
-                           created_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP,
-                           updated_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP,
-                           is_active
-                               BOOLEAN
-                               DEFAULT
-                                   1,
-                           FOREIGN
-                               KEY
-                               (
-                                user_id
-                                   ) REFERENCES users
-                               (
-                                id
-                                   )
-                       )
-                       """)
-
-        # Статусы студентов (справочник)
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS student_statuses
-                       (
-                           id
-                               INTEGER
-                               PRIMARY
-                                   KEY
-                               AUTOINCREMENT,
-                           code
-                               TEXT
-                               UNIQUE
-                               NOT
-                                   NULL,
-                           name
-                               TEXT
-                               NOT
-                                   NULL,
-                           description
-                               TEXT
-                       )
-                       """)
-
-        # Типы обучения (справочник)
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS training_types
-                       (
-                           id
-                               INTEGER
-                               PRIMARY
-                                   KEY
-                               AUTOINCREMENT,
-                           name
-                               TEXT
-                               UNIQUE
-                               NOT
-                                   NULL,
-                           description
-                               TEXT
-                       )
-                       """)
-
-        # Расписания (справочник)
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS schedules
-                       (
-                           id
-                               INTEGER
-                               PRIMARY
-                                   KEY
-                               AUTOINCREMENT,
-                           name
-                               TEXT
-                               NOT
-                                   NULL,
-                           time_start
-                               TEXT,
-                           time_end
-                               TEXT
-                       )
-                       """)
-
-        # Регистрации
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS registrations
-                       (
-                           id
-                               INTEGER
-                               PRIMARY
-                                   KEY
-                               AUTOINCREMENT,
-                           user_id
-                               INTEGER
-                               NOT
-                                   NULL,
-                           full_name
-                               TEXT
-                               NOT
-                                   NULL,
-                           phone
-                               TEXT
-                               NOT
-                                   NULL,
-                           course_id
-                               INTEGER
-                               NOT
-                                   NULL,
-                           training_type_id
-                               INTEGER,
-                           schedule_id
-                               INTEGER,
-                           status_code
-                               TEXT
-                               DEFAULT
-                                   'trial',
-                           created_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP,
-                           updated_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP,
-                           FOREIGN
-                               KEY
-                               (
-                                user_id
-                                   ) REFERENCES users
-                               (
-                                id
-                                   ),
-                           FOREIGN
-                               KEY
-                               (
-                                course_id
-                                   ) REFERENCES courses
-                               (
-                                id
-                                   ),
-                           FOREIGN
-                               KEY
-                               (
-                                training_type_id
-                                   ) REFERENCES training_types
-                               (
-                                id
-                                   ),
-                           FOREIGN
-                               KEY
-                               (
-                                schedule_id
-                                   ) REFERENCES schedules
-                               (
-                                id
-                                   ),
-                           FOREIGN
-                               KEY
-                               (
-                                status_code
-                                   ) REFERENCES student_statuses
-                               (
-                                code
-                                   )
-                       )
-                       """)
-
-        # Студенты
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS students
-                       (
-                           id
-                               INTEGER
-                               PRIMARY
-                                   KEY
-                               AUTOINCREMENT,
-                           user_id
-                               INTEGER
-                               UNIQUE
-                               NOT
-                                   NULL,
-                           registration_id
-                               INTEGER,
-                           full_name
-                               TEXT
-                               NOT
-                                   NULL,
-                           phone
-                               TEXT
-                               NOT
-                                   NULL,
-                           email
-                               TEXT,
-                           course_id
-                               INTEGER,
-                           training_type_id
-                               INTEGER,
-                           schedule_id
-                               INTEGER,
-                           status_code
-                               TEXT
-                               DEFAULT
-                                   'studying',
-                           enrollment_date
-                               DATE,
-                           completion_date
-                               DATE,
-                           progress
-                               REAL
-                               DEFAULT
-                                   0,
-                           created_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP,
-                           updated_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP,
-                           is_active
-                               BOOLEAN
-                               DEFAULT
-                                   1,
-                           FOREIGN
-                               KEY
-                               (
-                                user_id
-                                   ) REFERENCES users
-                               (
-                                id
-                                   ),
-                           FOREIGN
-                               KEY
-                               (
-                                registration_id
-                                   ) REFERENCES registrations
-                               (
-                                id
-                                   ),
-                           FOREIGN
-                               KEY
-                               (
-                                course_id
-                                   ) REFERENCES courses
-                               (
-                                id
-                                   ),
-                           FOREIGN
-                               KEY
-                               (
-                                training_type_id
-                                   ) REFERENCES training_types
-                               (
-                                id
-                                   ),
-                           FOREIGN
-                               KEY
-                               (
-                                schedule_id
-                                   ) REFERENCES schedules
-                               (
-                                id
-                                   ),
-                           FOREIGN
-                               KEY
-                               (
-                                status_code
-                                   ) REFERENCES student_statuses
-                               (
-                                code
-                                   )
-                       )
-                       """)
-
-        # Группы
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS groups
-                       (
-                           id
-                               INTEGER
-                               PRIMARY
-                                   KEY
-                               AUTOINCREMENT,
-                           name
-                               TEXT
-                               UNIQUE
-                               NOT
-                                   NULL,
-                           course_id
-                               INTEGER
-                               NOT
-                                   NULL,
-                           teacher_id
-                               INTEGER,
-                           schedule_id
-                               INTEGER,
-                           max_students
-                               INTEGER
-                               DEFAULT
-                                   15,
-                           start_date
-                               DATE,
-                           end_date
-                               DATE,
-                           created_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP,
-                           is_active
-                               BOOLEAN
-                               DEFAULT
-                                   1,
-                           FOREIGN
-                               KEY
-                               (
-                                course_id
-                                   ) REFERENCES courses
-                               (
-                                id
-                                   ),
-                           FOREIGN
-                               KEY
-                               (
-                                teacher_id
-                                   ) REFERENCES teachers
-                               (
-                                id
-                                   ),
-                           FOREIGN
-                               KEY
-                               (
-                                schedule_id
-                                   ) REFERENCES schedules
-                               (
-                                id
-                                   )
-                       )
-                       """)
-
-        # Связь студент-группа
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS student_groups
-                       (
-                           id
-                               INTEGER
-                               PRIMARY
-                                   KEY
-                               AUTOINCREMENT,
-                           student_id
-                               INTEGER
-                               NOT
-                                   NULL,
-                           group_id
-                               INTEGER
-                               NOT
-                                   NULL,
-                           joined_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP,
-                           left_at
-                               TIMESTAMP,
-                           is_active
-                               BOOLEAN
-                               DEFAULT
-                                   1,
-                           FOREIGN
-                               KEY
-                               (
-                                student_id
-                                   ) REFERENCES students
-                               (
-                                id
-                                   ),
-                           FOREIGN
-                               KEY
-                               (
-                                group_id
-                                   ) REFERENCES groups
-                               (
-                                id
-                                   ),
-                           UNIQUE
-                               (
-                                student_id,
-                                group_id
-                                   )
-                       )
-                       """)
-
-        # Уроки
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS lessons
-                       (
-                           id
-                               INTEGER
-                               PRIMARY
-                                   KEY
-                               AUTOINCREMENT,
-                           group_id
-                               INTEGER
-                               NOT
-                                   NULL,
-                           teacher_id
-                               INTEGER
-                               NOT
-                                   NULL,
-                           lesson_date
-                               DATE
-                               NOT
-                                   NULL,
-                           lesson_time
-                               TEXT
-                               NOT
-                                   NULL,
-                           topic
-                               TEXT,
-                           homework
-                               TEXT,
-                           created_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP,
-                           FOREIGN
-                               KEY
-                               (
-                                group_id
-                                   ) REFERENCES groups
-                               (
-                                id
-                                   ),
-                           FOREIGN
-                               KEY
-                               (
-                                teacher_id
-                                   ) REFERENCES teachers
-                               (
-                                id
-                                   )
-                       )
-                       """)
-
-        # Посещаемость
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS attendance
-                       (
-                           id
-                               INTEGER
-                               PRIMARY
-                                   KEY
-                               AUTOINCREMENT,
-                           lesson_id
-                               INTEGER
-                               NOT
-                                   NULL,
-                           student_id
-                               INTEGER
-                               NOT
-                                   NULL,
-                           status
-                               TEXT
-                               DEFAULT
-                                   'present',
-                           created_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP,
-                           FOREIGN
-                               KEY
-                               (
-                                lesson_id
-                                   ) REFERENCES lessons
-                               (
-                                id
-                                   ),
-                           FOREIGN
-                               KEY
-                               (
-                                student_id
-                                   ) REFERENCES students
-                               (
-                                id
-                                   ),
-                           UNIQUE
-                               (
-                                lesson_id,
-                                student_id
-                                   )
-                       )
-                       """)
-
-        # Напоминания
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS reminders
-                       (
-                           id
-                               INTEGER
-                               PRIMARY
-                                   KEY
-                               AUTOINCREMENT,
-                           user_id
-                               INTEGER
-                               NOT
-                                   NULL,
-                           message
-                               TEXT
-                               NOT
-                                   NULL,
-                           remind_at
-                               TIMESTAMP
-                               NOT
-                                   NULL,
-                           is_sent
-                               BOOLEAN
-                               DEFAULT
-                                   0,
-                           created_at
-                               TIMESTAMP
-                               DEFAULT
-                                   CURRENT_TIMESTAMP,
-                           sent_at
-                               TIMESTAMP,
-                           FOREIGN
-                               KEY
-                               (
-                                user_id
-                                   ) REFERENCES users
-                               (
-                                id
-                                   )
-                       )
-                       """)
-
-        # Отзывы
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS feedback
-                       (
-                           id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                           user_id    INTEGER NOT NULL,
-                           registration_id INTEGER,
-                           course_id  INTEGER,
-                           teacher_id INTEGER,
-                           rating     INTEGER CHECK
-                                                  (
-                                                      rating
-                                                          >=
-                                                      1
-                                                      AND rating
-                                                          <=
-                                                      5
-                                                      ),
-                           comment    TEXT,
-                           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                           FOREIGN KEY
-                               (
-                                user_id
-                                   ) REFERENCES users
-                               (
-                                id
-                                   ),
-                           FOREIGN KEY
-                               (
-                                registration_id
-                                   ) REFERENCES registrations
-                               (
-                                id
-                                   ),
-                           FOREIGN KEY
-                               (
-                                course_id
-                                   ) REFERENCES courses
-                               (
-                                id
-                                   ),
-                           FOREIGN KEY
-                               (
-                                teacher_id
-                                   ) REFERENCES teachers
-                               (
-                                id
-                                   )
-                       )
-                       """)
-
-        # Создаем индексы
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_registrations_user ON registrations(user_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_registrations_status ON registrations(status_code)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_students_user ON students(user_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_student_groups_student ON student_groups(student_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_student_groups_group ON student_groups(group_id)")
-
-        # Инициализируем справочные данные
-        _init_reference_data(cursor)
-
-        conn.commit()
-        self.logger.info("database schema created successfully")
+            self.logger.error(f"Error initializing schema: {e}", exc_info=True)
+            raise
 
     @contextmanager
     def get_connection(self):
-        """
-        Context manager для безопасной работы с подключением
-
-        Yields:
-            sqlite3.Connection: Подключение к БД
-
-        Example:
-            >>> with db.get_connection() as conn:
-            ...     cursor = conn.cursor()
-            ...     cursor.execute("SELECT * FROM users")
-        """
+        """Context manager для безопасной работы с подключением"""
         conn = sqlite3.connect(self.db_name)
-        conn.row_factory = sqlite3.Row  # Доступ к полям по имени
+        conn.row_factory = sqlite3.Row
         try:
             yield conn
             conn.commit()
         except Exception as e:
             conn.rollback()
-            self.logger.error(f"database error: {e}")
+            self.logger.error(f"Database error: {e}")
             raise
         finally:
             conn.close()
 
     def execute_query(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
-        """
-        Выполнить SELECT запрос
-
-        Args:
-            query: SQL запрос
-            params: Параметры запроса
-
-        Returns:
-            List[Dict]: Список результатов
-        """
+        """Выполнить SELECT запрос"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(query, params)
@@ -900,36 +370,127 @@ class Database:
             return [dict(row) for row in rows]
 
     def execute_update(self, query: str, params: tuple = ()) -> int:
-        """
-        Выполнить INSERT/UPDATE/DELETE
-
-        Args:
-            query: SQL запрос
-            params: Параметры запроса
-
-        Returns:
-            int: Количество затронутых строк
-        """
+        """Выполнить INSERT/UPDATE/DELETE"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(query, params)
             return cursor.rowcount
 
-    def execute_insert(self, query: str, params: tuple = ()) -> int:
+    def execute_insert(self, query: str, params: tuple = ()) -> Optional[int]:
         """
-        Выполнить INSERT и вернуть ID новой записи
-
-        Args:
-            query: SQL запрос
-            params: Параметры запроса
+        ✅ Выполнить INSERT и вернуть ID новой записи
 
         Returns:
-            int: ID новой записи
+            Optional[int]: ID новой записи или None при ошибке
         """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            return cursor.lastrowid
+        try:
+            print(f"\n{'=' * 70}")
+            print("🔍 EXECUTE_INSERT")
+            print(f"{'=' * 70}")
+            print(f"📝 Query: {query[:100]}...")
+            print(f"📊 Params: {params}")
+
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, params)
+                last_id = cursor.lastrowid
+
+                print(f"✅ lastrowid = {last_id}")
+
+                if last_id == 0:
+                    print("⚠️ WARNING: lastrowid = 0!")
+                    cursor.execute("SELECT last_insert_rowid()")
+                    fetch_result = cursor.fetchone()
+                    if fetch_result:
+                        actual_rowid = fetch_result[0]
+                        print(f"   Actual rowid from DB: {actual_rowid}")
+                        if actual_rowid > 0:
+                            last_id = actual_rowid
+
+                print(f"{'=' * 70}\n")
+                return last_id
+
+        except sqlite3.IntegrityError as e:
+            print(f"\n{'=' * 70}")
+            print("❌ INTEGRITY ERROR (Foreign Key или Unique constraint)")
+            print(f"{'=' * 70}")
+            print(f"Ошибка: {e}")
+            print(f"{'=' * 70}\n")
+            self.logger.error(f"IntegrityError: {e}", exc_info=True)
+            return None
+
+        except Exception as e:
+            print(f"\n{'=' * 70}")
+            print("❌ EXECUTE_INSERT ERROR")
+            print(f"{'=' * 70}")
+            print(f"Ошибка: {e}")
+            print(f"{'=' * 70}\n")
+            self.logger.error(f"Error in execute_insert: {e}", exc_info=True)
+            return None
+
+    def validate_registration_data(self, user_id: int, course_id: int,
+                                   training_type_id: Optional[int] = None,
+                                   schedule_id: Optional[int] = None) -> Tuple[bool, str]:
+        """
+        ✅ Проверить что все ID существуют в БД
+
+        Returns:
+            Tuple[bool, str]: (is_valid, error_message)
+        """
+        print(f"\n{'=' * 70}")
+        print("🔍 ВАЛИДАЦИЯ ДАННЫХ РЕГИСТРАЦИИ")
+        print(f"{'=' * 70}")
+
+        # Проверка user_id
+        result = self.execute_query("SELECT id FROM users WHERE id = ?", (user_id,))
+        if not result:
+            error = f"❌ User ID {user_id} не найден"
+            print(error)
+            print(f"{'=' * 70}\n")
+            return False, error
+        print(f"✅ User ID {user_id} найден")
+
+        # Проверка course_id
+        result = self.execute_query("SELECT id, name FROM courses WHERE id = ?", (course_id,))
+        if not result:
+            error = f"❌ Course ID {course_id} не найден"
+            print(error)
+            print(f"{'=' * 70}\n")
+            return False, error
+        print(f"✅ Course ID {course_id} найден: {result[0]['name']}")
+
+        # Проверка training_type_id
+        if training_type_id:
+            result = self.execute_query("SELECT id, name FROM training_types WHERE id = ?", (training_type_id,))
+            if not result:
+                error = f"❌ Training Type ID {training_type_id} не найден"
+                print(error)
+                print(f"{'=' * 70}\n")
+                return False, error
+            print(f"✅ Training Type ID {training_type_id} найден: {result[0]['name']}")
+
+        # Проверка schedule_id
+        if schedule_id:
+            result = self.execute_query("SELECT id, name FROM schedules WHERE id = ?", (schedule_id,))
+            if not result:
+                error = f"❌ Schedule ID {schedule_id} не найден"
+                print(error)
+                print(f"{'=' * 70}\n")
+                return False, error
+            print(f"✅ Schedule ID {schedule_id} найден: {result[0]['name']}")
+
+        # Проверка статуса
+        result = self.execute_query("SELECT code FROM student_statuses WHERE code = 'trial'")
+        if not result:
+            error = "❌ Статус 'trial' не найден"
+            print(error)
+            print(f"{'=' * 70}\n")
+            return False, error
+        print("✅ Статус 'trial' существует")
+
+        print("✅ Все данные валидны!")
+        print(f"{'=' * 70}\n")
+        return True, "OK"
 
     # ============================================
     # ЛЕНИВАЯ ЗАГРУЗКА РЕПОЗИТОРИЕВ
@@ -1007,23 +568,46 @@ class Database:
             self._reminders = ReminderRepository(self)
         return self._reminders
 
+    @property
+    def users(self):
+        """Репозиторий пользователей"""
+        if self._users is None:
+            from .user import UserRepository
+            self._users = UserRepository(self)
+        return self._users
+
     # ============================================
-    # МЕТОДЫ СОВМЕСТИМОСТИ (для старого кода)
+    # МЕТОДЫ СОВМЕСТИМОСТИ
     # ============================================
 
     def get_all_admins(self):
-        """Получить всех администраторов (совместимость)"""
+        """Получить всех администраторов"""
         return self.admins.get_all()
 
-    def check_database_structure(self):
-        """Проверить структуру БД (совместимость)"""
+    def check_database_structure(self) -> bool:
+        """Проверить структуру БД"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
                 tables = [row[0] for row in cursor.fetchall()]
-                self.logger.info(f"database tables: {', '.join(tables)}")
+                self.logger.info(f"Database tables: {', '.join(tables)}")
                 return True
         except Exception as e:
-            self.logger.error(f"Error checking database structure: {e}")
+            self.logger.error(f"Error checking database: {e}")
             return False
+
+    def get_user_by_telegram_id(self, telegram_id: int) -> Optional[Dict[str, Any]]:
+        """Получить пользователя по Telegram ID"""
+        results = self.execute_query(
+            "SELECT * FROM users WHERE telegram_id = ?",
+            (telegram_id,)
+        )
+        return results[0] if results else None
+
+    def get_registrations_by_user_id(self, user_id: int) -> List[Dict[str, Any]]:
+        """Получить регистрации пользователя"""
+        return self.execute_query(
+            "SELECT * FROM registrations WHERE user_id = ?",
+            (user_id,)
+        )

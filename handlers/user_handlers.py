@@ -6,9 +6,6 @@ import sys
 
 import aiogram.exceptions
 
-from database import registrations
-
-# Добавляем путь к корневой папке проекта
 current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
@@ -20,7 +17,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
 
 from states.user_states import RegistrationStates, FeedbackStates
-# noinspection PyProtectedMember
+
 from keyboards.user_kb import (
     get_main_keyboard,
     get_cancel_keyboard,
@@ -293,7 +290,13 @@ async def get_phone(message: Message, state: FSMContext):
 
 @user_router.callback_query(F.data == "confirm_registration", RegistrationStates.confirmation)
 async def confirm_registration(callback: CallbackQuery, state: FSMContext):
-    """Подтверждение регистрации"""
+    """
+    ✅ ИСПРАВЛЕНО: Подтверждение регистрации
+
+    ИЗМЕНЕНИЯ:
+    - Добавлены full_name и phone в вызов db.registrations.create()
+    - Статус по умолчанию 'trial'
+    """
     try:
         data = await state.get_data()
 
@@ -302,9 +305,8 @@ async def confirm_registration(callback: CallbackQuery, state: FSMContext):
 
         # ✅ Создаем пользователя (если не существует)
         user_query = """
-                     INSERT OR IGNORE
-                     INTO users (telegram_id, full_name, phone)
-                     VALUES (?, ?, ?)
+                     INSERT OR IGNORE INTO users (telegram_id, full_name, phone)
+                     VALUES (?, ?, ?) \
                      """
         db.execute_update(user_query, (
             callback.from_user.id,
@@ -325,7 +327,7 @@ async def confirm_registration(callback: CallbackQuery, state: FSMContext):
         # Получаем ID курса по названию
         course_query = "SELECT id FROM courses WHERE name = ?"
         course_rows = db.execute_query(course_query, (data['course'],))
-        course_id = course_rows[0]['id'] if course_rows else 1  # По умолчанию первый курс
+        course_id = course_rows[0]['id'] if course_rows else 1
 
         # Получаем ID типа обучения
         training_query = "SELECT id FROM training_types WHERE name = ?"
@@ -337,18 +339,30 @@ async def confirm_registration(callback: CallbackQuery, state: FSMContext):
         schedule_rows = db.execute_query(schedule_query, (data['schedule'],))
         schedule_id = schedule_rows[0]['id'] if schedule_rows else 1
 
-        # ✅ Создаем регистрацию со статусом 'trial' (пробный урок)
+        # ✅ ИСПРАВЛЕНО: Создаем регистрацию с full_name и phone!
         reg_id = db.registrations.create(
             user_id=user_id,
             course_id=course_id,
+            full_name=data['name'],  # ✅ ДОБАВЛЕНО!
+            phone=data['phone'],  # ✅ ДОБАВЛЕНО!
             training_type_id=training_type_id,
             schedule_id=schedule_id,
-            status='trial'  # ✅ ИСПРАВЛЕНО: правильный статус для новых регистраций
+            status='trial'  # ✅ Правильный статус для новых регистраций
         )
 
         print(f"✅ DEBUG: Registration created with ID: {reg_id}")
 
-        # ✅ ДОБАВЛЕНО: Отправляем подтверждение пользователю
+        if not reg_id:
+            # ✅ ДОБАВЛЕНО: Проверка что регистрация создалась
+            await callback.message.edit_text(
+                "❌ Ошибка при создании регистрации. Попробуйте позже.",
+                reply_markup=get_main_keyboard()
+            )
+            await callback.answer("❌ Ошибка сохранения")
+            await state.clear()
+            return
+
+        # ✅ Отправляем подтверждение пользователю
         success_message = (
             "✅ *Регистрация успешно завершена!*\n\n"
             f"👤 *Имя:* {data['name']}\n"
@@ -368,11 +382,11 @@ async def confirm_registration(callback: CallbackQuery, state: FSMContext):
             reply_markup=get_main_keyboard()
         )
 
-        # ✅ ДОБАВЛЕНО: Отправляем уведомление администраторам
-        bot = callback.bot  # Получаем экземпляр бота из callback
-        await send_registration_to_admins(bot, data, callback.from_user)
+        # ✅ Отправляем уведомление администраторам
+        bot = callback.bot
+        await send_registration_to_admins(bot, data, callback.from_user, reg_id)  # ✅ Передаём reg_id
 
-        # ✅ ДОБАВЛЕНО: Очищаем состояние
+        # ✅ Очищаем состояние
         await state.clear()
         await callback.answer("✅ Регистрация завершена!")
 
@@ -390,136 +404,316 @@ async def confirm_registration(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Ошибка регистрации")
 
 
-async def send_registration_to_admins(bot, data, user):
-    """Отправка уведомления о новой регистрации администраторам"""
+def escape_markdown_v2(text: str) -> str:
+    if not text:
+        return ""
+
+    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+
+    return text
+
+
+async def send_registration_to_admins(bot, data, user, reg_id=None):
+    """
+    Отправка уведомления о новой регистрации администраторам
+
+    Args:
+        bot: Экземпляр бота
+        data: Словарь с данными регистрации
+        user: Объект пользователя Telegram
+        reg_id: ID регистрации (опционально)
+    """
     try:
+        # Формируем заголовок
+        if reg_id:
+            header = f"🆕 <b>НОВАЯ РЕГИСТРАЦИЯ #{reg_id}</b>\n\n"
+        else:
+            header = "🆕 <b>НОВАЯ РЕГИСТРАЦИЯ!</b>\n\n"
+
+        # ✅ ИСПРАВЛЕНО: Используем HTML вместо Markdown
+        # HTML более устойчив к специальным символам
         message_text = (
-            "🆕 *НОВАЯ РЕГИСТРАЦИЯ!*\n\n"
-            f"👤 *Имя:* {data['name']}\n"
-            f"📞 *Телефон:* {data['phone']}\n"
-            f"🆔 *Telegram ID:* `{user.id}`\n"  # ✅ Форматирование для копирования
-            f"📝 *Username:* @{user.username or 'не указан'}\n\n"
-            f"🎓 *Курс:* {data['course']}\n"
-            f"📊 *Тип обучения:* {data['training_type']}\n"
-            f"⏰ *Расписание:* {data['schedule']}\n"
-            f"💰 *Стоимость:* {data['price']}\n\n"
-            f"🕒 *Время:* {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
-        )
-
-        # ✅ ДОБАВЛЕНО: Счетчик успешных отправок
-        sent_count = 0
-
-        for admin_id in config.ADMIN_IDS:
-            try:
-                await bot.send_message(admin_id, message_text, parse_mode="Markdown")
-                sent_count += 1
-                logger.info(f"✅ Notification sent to admin {admin_id}")
-            except Exception as e:
-                logger.error(f"❌ Ошибка отправки администратору {admin_id}: {e}")
-
-        logger.info(f"✅ Registration notification sent to {sent_count}/{len(config.ADMIN_IDS)} admins")
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка send_registration_to_admins: {e}", exc_info=True)
-
-
-async def send_registration_to_admins(bot, data, user):
-    """Отправка уведомления о новой регистрации администраторам"""
-    try:
-        message_text = (
-            "🆕 *НОВАЯ РЕГИСТРАЦИЯ!*\n\n"
-            f"👤 *Имя:* {data['name']}\n"
-            f"📞 *Телефон:* {data['phone']}\n"
-            f"🆔 *Telegram ID:* `{user.id}`\n"  # ✅ Форматирование для копирования
-            f"📝 *Username:* @{user.username or 'не указан'}\n\n"
-            f"🎓 *Курс:* {data['course']}\n"
-            f"📊 *Тип обучения:* {data['training_type']}\n"
-            f"⏰ *Расписание:* {data['schedule']}\n"
-            f"💰 *Стоимость:* {data['price']}\n\n"
-            f"🕒 *Время:* {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
-        )
-
-        # ✅ ДОБАВЛЕНО: Счетчик успешных отправок
-        sent_count = 0
-
-        for admin_id in config.ADMIN_IDS:
-            try:
-                await bot.send_message(admin_id, message_text, parse_mode="Markdown")
-                sent_count += 1
-                logger.info(f"✅ Notification sent to admin {admin_id}")
-            except Exception as e:
-                logger.error(f"❌ Ошибка отправки администратору {admin_id}: {e}")
-
-        logger.info(f"✅ Registration notification sent to {sent_count}/{len(config.ADMIN_IDS)} admins")
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка send_registration_to_admins: {e}", exc_info=True)
-
-
-async def send_registration_to_admins(bot, data, user, reg_id):
-    """Отправка уведомления о новой регистрации администраторам"""
-    try:
-        message_text = (
-            f"🆕 *НОВАЯ РЕГИСТРАЦИЯ #{reg_id}*\n\n"
-            f"👤 *Имя:* {data['name']}\n"
-            f"📞 *Телефон:* {data['phone']}\n"
-            f"🆔 *Telegram ID:* `{user.id}`\n"
-            f"📝 *Username:* @{user.username or 'не указан'}\n\n"
-            f"🎓 *Курс:* {data['course']}\n"
-            f"📊 *Тип обучения:* {data['training_type']}\n"
-            f"⏰ *Расписание:* {data['schedule']}\n"
-            f"💰 *Стоимость:* {data['price']}\n\n"
-            f"🕒 *Время:* {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
+            f"{header}"
+            f"👤 <b>Имя:</b> {data.get('name', 'Не указано')}\n"
+            f"📞 <b>Телефон:</b> {data.get('phone', 'Не указан')}\n"
+            f"🆔 <b>Telegram ID:</b> <code>{user.id}</code>\n"
+            f"📝 <b>Username:</b> @{user.username or 'не указан'}\n\n"
+            f"🎓 <b>Курс:</b> {data.get('course', 'Не указан')}\n"
+            f"📊 <b>Тип обучения:</b> {data.get('training_type', 'Не указан')}\n"
+            f"⏰ <b>Расписание:</b> {data.get('schedule', 'Не указано')}\n"
+            f"💰 <b>Стоимость:</b> {data.get('price', 'Не указана')}\n\n"
+            f"🕒 <b>Время:</b> {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
         )
 
         sent_count = 0
         failed_count = 0
 
+        print(f"\n{'=' * 70}")
+        print(f"📨 ОТПРАВКА УВЕДОМЛЕНИЙ АДМИНИСТРАТОРАМ")
+        print(f"{'=' * 70}")
+        print(f"📊 Количество администраторов: {len(config.ADMIN_IDS)}")
+
         for admin_id in config.ADMIN_IDS:
             try:
                 print(f"  📤 Отправка администратору {admin_id}...")
-                await bot.send_message(admin_id, message_text, parse_mode="Markdown")
+
+                # ✅ ИСПРАВЛЕНО: parse_mode="HTML" вместо "Markdown"
+                await bot.send_message(
+                    admin_id,
+                    message_text,
+                    parse_mode="HTML"  # ✅ HTML вместо Markdown
+                )
+
                 sent_count += 1
                 print(f"  ✅ Уведомление отправлено админу {admin_id}")
                 logger.info(f"✅ Notification sent to admin {admin_id}")
+
             except aiogram.exceptions.TelegramForbiddenError:
                 failed_count += 1
                 print(f"  ❌ Админ {admin_id} заблокировал бота")
-                logger.error(f"❌ Admin {admin_id} blocked the bot")
+                logger.warning(f"⚠️ Admin {admin_id} blocked the bot")
+
+            except aiogram.exceptions.TelegramBadRequest as e:
+                failed_count += 1
+                print(f"  ❌ Некорректный запрос для админа {admin_id}: {e}")
+                logger.error(f"❌ Bad request for admin {admin_id}: {e}")
+
             except Exception as e:
                 failed_count += 1
                 print(f"  ❌ Ошибка отправки админу {admin_id}: {e}")
                 logger.error(f"❌ Error sending to admin {admin_id}: {e}")
 
-        print(f"\n📊 Статистика отправки администраторам:")
-        print(f"  ✅ Успешно: {sent_count}/{len(config.ADMIN_IDS)}")
+        print(f"\n{'=' * 70}")
+        print(f"📊 ИТОГИ ОТПРАВКИ:")
+        print(f"  ✅ Успешно отправлено: {sent_count}/{len(config.ADMIN_IDS)}")
         print(f"  ❌ Ошибок: {failed_count}/{len(config.ADMIN_IDS)}")
+        print(f"{'=' * 70}\n")
 
-        logger.info(f"✅ Registration notification sent to {sent_count}/{len(config.ADMIN_IDS)} admins")
+        logger.info(
+            f"✅ Registration notification: sent={sent_count}, failed={failed_count}, "
+            f"total={len(config.ADMIN_IDS)}"
+        )
+
+        return sent_count > 0
 
     except Exception as e:
-        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА в send_registration_to_admins: {e}")
+        print(f"\n{'=' * 70}")
+        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА В send_registration_to_admins")
+        print(f"Ошибка: {e}")
+        print(f"{'=' * 70}\n")
         logger.error(f"❌ Critical error in send_registration_to_admins: {e}", exc_info=True)
+        return False
 
 
-@user_router.callback_query(F.data == "leave_feedback")
-async def show_feedback_menu(callback: CallbackQuery, state: FSMContext):
-    """Показать меню обратной связи"""
-    await state.clear()
+# ============================================================
+# ДОПОЛНИТЕЛЬНЫЕ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (ОПЦИОНАЛЬНО)
+# ============================================================
 
-    # Сохраняем информацию о пользователе
-    await state.update_data(
-        user_id=callback.from_user.id,
-        user_name=callback.from_user.full_name or callback.from_user.username or "Пользователь"
+async def send_status_change_to_admins(bot, student_name, old_status, new_status, reg_id):
+    """
+    Отправка уведомления об изменении статуса студента
+
+    Args:
+        bot: Экземпляр бота
+        student_name: Имя студента
+        old_status: Старый статус
+        new_status: Новый статус
+        reg_id: ID регистрации
+    """
+    try:
+        status_emojis = {
+            'active': '🟢',
+            'trial': '🟡',
+            'studying': '🔵',
+            'frozen': '⚪',
+            'waiting_payment': '🟠',
+            'completed': '🟣'
+        }
+
+        old_emoji = status_emojis.get(old_status, '⚫')
+        new_emoji = status_emojis.get(new_status, '⚫')
+
+        message_text = (
+            f"🔄 *ИЗМЕНЕНИЕ СТАТУСА*\n\n"
+            f"📝 *Студент:* {student_name}\n"
+            f"🆔 *Регистрация:* #{reg_id}\n\n"
+            f"{old_emoji} *Было:* {config.STATUSES.get(old_status, old_status)}\n"
+            f"{new_emoji} *Стало:* {config.STATUSES.get(new_status, new_status)}\n\n"
+            f"🕒 *Время:* {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        )
+
+        sent_count = 0
+        for admin_id in config.ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, message_text, parse_mode="Markdown")
+                sent_count += 1
+            except Exception as e:
+                logger.error(f"❌ Error sending status change to admin {admin_id}: {e}")
+
+        logger.info(f"✅ Status change notification sent to {sent_count} admins")
+        return sent_count > 0
+
+    except Exception as e:
+        logger.error(f"❌ Error in send_status_change_to_admins: {e}", exc_info=True)
+        return False
+
+
+async def send_registration_to_channel(bot, data, user, reg_id=None):
+    """
+    Отправка уведомления о новой регистрации в Telegram канал
+
+    Args:
+        bot: Экземпляр бота
+        data: Словарь с данными регистрации (name, phone, course, training_type, schedule, price)
+        user: Объект пользователя Telegram
+        reg_id: ID регистрации (опционально)
+
+    Returns:
+        bool: True если успешно отправлено
+    """
+    try:
+        from config import Config
+        config = Config()
+
+        # Формируем заголовок с ID если он есть
+        if reg_id:
+            header = f"🆕 <b>НОВАЯ РЕГИСТРАЦИЯ #{reg_id}</b>\n\n"
+        else:
+            header = "🆕 <b>НОВАЯ РЕГИСТРАЦИЯ!</b>\n\n"
+
+        # ✅ HTML формат (более устойчив к специальным символам)
+        message_text = (
+            f"{header}"
+            f"👤 <b>Имя:</b> {data.get('name', 'Не указано')}\n"
+            f"📞 <b>Телефон:</b> {data.get('phone', 'Не указан')}\n"
+            f"🆔 <b>Telegram ID:</b> <code>{user.id}</code>\n"
+            f"📝 <b>Username:</b> @{user.username or 'не указан'}\n\n"
+            f"🎓 <b>Курс:</b> {data.get('course', 'Не указан')}\n"
+            f"📊 <b>Тип обучения:</b> {data.get('training_type', 'Не указан')}\n"
+            f"⏰ <b>Расписание:</b> {data.get('schedule', 'Не указано')}\n"
+            f"💰 <b>Стоимость:</b> {data.get('price', 'Не указана')}\n\n"
+            f"🕒 <b>Время:</b> {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        )
+
+        print(f"\n{'=' * 70}")
+        print(f"📨 ОТПРАВКА УВЕДОМЛЕНИЯ В КАНАЛ")
+        print(f"{'=' * 70}")
+        print(f"📺 Channel ID: {config.CHANNEL_ID}")
+        print(f"📝 Регистрация ID: {reg_id}")
+
+        try:
+            # ✅ Отправляем в КАНАЛ (не админам)
+            message = await bot.send_message(
+                config.CHANNEL_ID,  # ✅ CHANNEL_ID из конфига
+                message_text,
+                parse_mode="HTML"  # ✅ HTML вместо Markdown
+            )
+
+            print(f"✅ Уведомление отправлено в канал {config.CHANNEL_ID}")
+            print(f"   Message ID: {message.message_id}")
+            logger.info(f"✅ Notification sent to channel {config.CHANNEL_ID}, reg_id={reg_id}")
+            return True
+
+        except aiogram.exceptions.TelegramForbiddenError:
+            print(f"❌ Бот не добавлен в канал или нет прав на отправку сообщений")
+            print(f"   Решение:")
+            print(f"   1. Добавьте бота в канал {config.CHANNEL_ID}")
+            print(f"   2. Сделайте бота администратором канала")
+            print(f"   3. Дайте права 'Post Messages'")
+            logger.error(f"❌ Bot is not in channel {config.CHANNEL_ID} or lacks permissions")
+            return False
+
+        except aiogram.exceptions.TelegramBadRequest as e:
+            print(f"❌ Некорректный запрос к Telegram API: {e}")
+            print(f"   Возможные причины:")
+            print(f"   - Неверный CHANNEL_ID (проверьте что начинается с -100)")
+            print(f"   - Канал удалён или не существует")
+            logger.error(f"❌ Bad request to channel {config.CHANNEL_ID}: {e}")
+            return False
+
+        except Exception as e:
+            print(f"❌ Неизвестная ошибка при отправке в канал: {e}")
+            logger.error(f"❌ Error sending to channel {config.CHANNEL_ID}: {e}", exc_info=True)
+            return False
+
+
+    except Exception as e:
+        print(f"\n{'=' * 70}")
+        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА В send_registration_to_channel")
+        print(f"Ошибка: {e}")
+        print(f"{'=' * 70}\n")
+        logger.error(f"❌ Critical error in send_registration_to_channel: {e}", exc_info=True)
+        return False
+
+
+# ============================================================
+# ДОПОЛНИТЕЛЬНАЯ ФУНКЦИЯ: Отправка и админам, и в канал
+# ============================================================
+
+async def send_registration_notifications(bot, data, user, reg_id=None):
+    """
+    Отправка уведомлений И в канал, И администраторам
+
+    Используйте эту функцию если нужно дублировать уведомления
+    """
+    from config import Config
+    config = Config()
+
+    success_channel = False
+    success_admins = 0
+
+    # 1. Отправляем в канал
+    print(f"\n{'=' * 70}")
+    print(f"📨 ОТПРАВКА УВЕДОМЛЕНИЙ")
+    print(f"{'=' * 70}")
+
+    success_channel = await send_registration_to_channel(bot, data, user, reg_id)
+
+    # 2. Отправляем администраторам (опционально)
+    if hasattr(config, 'ADMIN_IDS') and config.ADMIN_IDS:
+        print(f"\n📤 Отправка администраторам...")
+        print(f"📊 Количество админов: {len(config.ADMIN_IDS)}")
+
+        # Формируем то же сообщение
+        if reg_id:
+            header = f"🆕 <b>НОВАЯ РЕГИСТРАЦИЯ #{reg_id}</b>\n\n"
+        else:
+            header = "🆕 <b>НОВАЯ РЕГИСТРАЦИЯ!</b>\n\n"
+
+        message_text = (
+            f"{header}"
+            f"👤 <b>Имя:</b> {data.get('name', 'Не указано')}\n"
+            f"📞 <b>Телефон:</b> {data.get('phone', 'Не указан')}\n"
+            f"🆔 <b>Telegram ID:</b> <code>{user.id}</code>\n"
+            f"📝 <b>Username:</b> @{user.username or 'не указан'}\n\n"
+            f"🎓 <b>Курс:</b> {data.get('course', 'Не указан')}\n"
+            f"📊 <b>Тип обучения:</b> {data.get('training_type', 'Не указан')}\n"
+            f"⏰ <b>Расписание:</b> {data.get('schedule', 'Не указано')}\n"
+            f"💰 <b>Стоимость:</b> {data.get('price', 'Не указана')}\n\n"
+            f"🕒 <b>Время:</b> {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        )
+
+        for admin_id in config.ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, message_text, parse_mode="HTML")
+                success_admins += 1
+                print(f"  ✅ Отправлено админу {admin_id}")
+            except Exception as e:
+                print(f"  ❌ Ошибка отправки админу {admin_id}: {e}")
+
+        print(f"📊 Админам отправлено: {success_admins}/{len(config.ADMIN_IDS)}")
+
+    print(f"{'=' * 70}\n")
+
+    logger.info(
+        f"✅ Notifications sent: channel={success_channel}, "
+        f"admins={success_admins}"
     )
 
-    await callback.message.edit_text(
-        "💬 *Обратная связь*\n\n"
-        "Выберите тип обращения:",
-        parse_mode="Markdown",
-        reply_markup=get_feedback_types_keyboard()
-    )
-    await callback.answer()
+    return success_channel or success_admins > 0
 
 
 @user_router.callback_query(F.data.in_(["feedback_review", "feedback_suggestion", "feedback_issue"]))
@@ -666,103 +860,120 @@ async def edit_feedback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-async def send_feedback_to_admins(bot, feedback_data):
-    """Отправка уведомления о feedback администраторам"""
+async def send_feedback_to_admins(bot, user_name, rating, feedback_text, user_id):
+    """
+    Отправка уведомления о новом отзыве
+
+    Args:
+        bot: Экземпляр бота
+        user_name: Имя пользователя
+        rating: Оценка (1-5)
+        feedback_text: Текст отзыва
+        user_id: Telegram ID пользователя
+    """
     try:
-        type_names = {
-            "review": "📝 НОВЫЙ ОТЗЫВ",
-            "suggestion": "💡 НОВОЕ ПРЕДЛОЖЕНИЕ",
-            "issue": "🐞 СООБЩЕНИЕ О ПРОБЛЕМЕ"
-        }
+        stars = "⭐" * rating
 
         message_text = (
-            f"{type_names[feedback_data['feedback_type']]}\n\n"
-            f"👤 *Пользователь:* {feedback_data['user_name']}\n"
-            f"🆔 *ID:* {feedback_data['user_id']}\n"
-        )
-
-        if feedback_data['feedback_type'] == 'review':
-            message_text += f"⭐ *Оценка:* {feedback_data['rating']}/5\n"
-
-        message_text += (
-            f"📄 *Текст:*\n{feedback_data['feedback_text']}\n\n"
+            f"💬 *НОВЫЙ ОТЗЫВ!*\n\n"
+            f"👤 *От:* {user_name}\n"
+            f"🆔 *ID:* `{user_id}`\n"
+            f"⭐ *Оценка:* {stars} ({rating}/5)\n\n"
+            f"📝 *Отзыв:*\n{feedback_text}\n\n"
             f"🕒 *Время:* {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
         )
 
+        sent_count = 0
         for admin_id in config.ADMIN_IDS:
             try:
                 await bot.send_message(admin_id, message_text, parse_mode="Markdown")
+                sent_count += 1
             except Exception as e:
-                logger.error(f"Ошибка отправки администратору {admin_id}: {e}")
+                logger.error(f"❌ Error sending feedback to admin {admin_id}: {e}")
+
+        logger.info(f"✅ Feedback notification sent to {sent_count} admins")
+        return sent_count > 0
 
     except Exception as e:
-        logger.error(f"Ошибка send_feedback_to_admins: {e}")
+        logger.error(f"❌ Error in send_feedback_to_admins: {e}", exc_info=True)
+        return False
 
 
 # Функционал кабинета
 @user_router.callback_query(F.data == "show_cabinet")
 async def show_cabinet(callback: CallbackQuery):
-    """Показать личный кабинет пользователя с детальным логированием"""
+    """✅ ИСПРАВЛЕНО: Показать личный кабинет с защитой от дублирования"""
+    global registrations
     try:
         print("\n" + "=" * 70)
-        print(f"📱 ОТКРЫТИЕ ЛИЧНОГО КАБИНЕТА")
+        print("📱 ОТКРЫТИЕ ЛИЧНОГО КАБИНЕТА")
         print(f"👤 User ID: {callback.from_user.id}")
         print(f"📝 Username: @{callback.from_user.username or 'N/A'}")
         print("=" * 70)
 
         # ============================================
-        # ШАГ 1: Получение user_id из БД
+        # ШАГ 1: Получение данных пользователя
         # ============================================
-        print("\n📌 ШАГ 1: Поиск пользователя в БД...")
-        query_user = "SELECT id, full_name, phone FROM users WHERE telegram_id = ?"
-        user_rows = db.execute_query(query_user, (callback.from_user.id,))
+        print(f"\n📌 ШАГ 1: Поиск пользователя в БД...")
 
-        if not user_rows:
-            print("❌ Пользователь не найден в БД")
+        try:
+            query_user = "SELECT id, full_name, phone FROM users WHERE telegram_id = ?"
+            users = db.execute_query(query_user, (callback.from_user.id,))
+
+            if not users:
+                print("❌ Пользователь не найден")
+                await callback.message.edit_text(
+                    "❌ Пользователь не найден. Пожалуйста, начните с регистрации.",
+                    reply_markup=get_main_keyboard()
+                )
+                await callback.answer()
+                return
+
+            user = users[0]
+            user_id = user['id']
+            user_name = user.get('full_name', 'Не указано')
+            user_phone = user.get('phone', 'Не указан')
+
+            print(f"✅ Пользователь найден:")
+            print(f"  - ID в БД: {user_id}")
+            print(f"  - Имя: {user_name}")
+            print(f"  - Телефон: {user_phone}")
+
+        except Exception as e:
+            print(f"❌ Ошибка получения пользователя: {e}")
             await callback.message.edit_text(
-                "❌ Вы еще не зарегистрированы.\n\n"
-                "Чтобы записаться на курс, нажмите «📝 Новая запись»!",
+                "❌ Произошла ошибка при загрузке данных.",
                 reply_markup=get_main_keyboard()
             )
-            await callback.answer("Сначала нужно зарегистрироваться")
+            await callback.answer()
             return
 
-        user_id = user_rows[0]['id']
-        user_name = user_rows[0].get('full_name', 'Не указано')
-        user_phone = user_rows[0].get('phone', 'Не указано')
-
-        print(f"✅ Пользователь найден:")
-        print(f"  - ID в БД: {user_id}")
-        print(f"  - Имя: {user_name}")
-        print(f"  - Телефон: {user_phone}")
-
         # ============================================
-        # ШАГ 2: Получение регистраций пользователя
+        # ШАГ 2: Получение регистраций
         # ============================================
         print(f"\n📌 ШАГ 2: Поиск регистраций для user_id={user_id}...")
 
         try:
-            # ✅ ИСПРАВЛЕНО: Используем прямой SQL запрос вместо метода репозитория
             query_registrations = """
-                                  SELECT r.id, \
-                                         r.status_code, \
-                                         r.created_at, \
-                                         r.updated_at, \
-                                         c.name  as course_name, \
-                                         tt.name as training_type_name, \
-                                         s.name  as schedule_name, \
-                                         CASE \
-                                             WHEN tt.name LIKE '%Групповые%80%' THEN c.price_group \
-                                             WHEN tt.name LIKE '%Индивидуальное%' THEN c.price_individual \
-                                             WHEN tt.name LIKE '%Групповые%60%' THEN c.price_group \
-                                             ELSE c.price_group \
+                                  SELECT r.id,
+                                         r.status_code,
+                                         r.created_at,
+                                         r.updated_at,
+                                         c.name  as course_name,
+                                         tt.name as training_type_name,
+                                         s.name  as schedule_name,
+                                         CASE
+                                             WHEN tt.name LIKE '%Групповые%80%' THEN c.price_group
+                                             WHEN tt.name LIKE '%Индивидуальное%' THEN c.price_individual
+                                             WHEN tt.name LIKE '%Групповые%60%' THEN c.price_group
+                                             ELSE c.price_group
                                              END as price
                                   FROM registrations r
                                            LEFT JOIN courses c ON r.course_id = c.id
                                            LEFT JOIN training_types tt ON r.training_type_id = tt.id
                                            LEFT JOIN schedules s ON r.schedule_id = s.id
                                   WHERE r.user_id = ?
-                                  ORDER BY r.created_at DESC \
+                                  ORDER BY r.created_at DESC
                                   """
 
             registrations = db.execute_query(query_registrations, (user_id,))
@@ -788,6 +999,16 @@ async def show_cabinet(callback: CallbackQuery):
 
         if not registrations:
             print("ℹ️ У пользователя нет регистраций")
+
+            # ✅ ИСПРАВЛЕНИЕ: Используем специальную клавиатуру для пустого кабинета
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+            empty_cabinet_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📝 Новая запись", callback_data="new_registration")],
+                [InlineKeyboardButton(text="📚 Наши курсы", callback_data="show_courses")],
+                [InlineKeyboardButton(text="◀️ Главное меню", callback_data="back_to_main")]
+            ])
+
             await callback.message.edit_text(
                 f"👤 *Личный кабинет*\n\n"
                 f"📝 Имя: {user_name}\n"
@@ -795,7 +1016,7 @@ async def show_cabinet(callback: CallbackQuery):
                 f"У вас пока нет активных записей.\n\n"
                 f"Хотите записаться на курс? Нажмите «📝 Новая запись»!",
                 parse_mode="Markdown",
-                reply_markup=get_main_keyboard()
+                reply_markup=empty_cabinet_keyboard  # ✅ Изменённая клавиатура
             )
             await callback.answer("У вас пока нет записей")
             print("✅ Сообщение отправлено")
@@ -834,7 +1055,6 @@ async def show_cabinet(callback: CallbackQuery):
             # Форматируем дату
             created_at = reg.get('created_at', '')
             if created_at:
-                # Обрезаем до даты, если есть время
                 date_only = created_at.split()[0] if ' ' in created_at else created_at
                 cabinet_text += f"   📅 {date_only}\n\n"
             else:
@@ -848,6 +1068,40 @@ async def show_cabinet(callback: CallbackQuery):
             reply_markup=get_cabinet_keyboard(has_registrations=True)
         )
         await callback.answer("Личный кабинет")
+        print("✅ Сообщение с регистрациями отправлено")
+
+    except aiogram.exceptions.TelegramBadRequest as e:
+        # ✅ ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА: Обработка ошибки "message is not modified"
+        if "message is not modified" in str(e):
+            print("⚠️ Сообщение не изменилось, пропускаем редактирование")
+            await callback.answer("Личный кабинет уже открыт")
+        else:
+            print(f"=" * 70)
+            print(f"❌ ❌ ❌ ОШИБКА ОТКРЫТИЯ КАБИНЕТА!")
+            print(f"Тип ошибки: {type(e).__name__}")
+            print(f"Сообщение: {e}")
+            print(f"=" * 70)
+            logger.error(f"❌ Error in show_cabinet: {e}", exc_info=True)
+            await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+    except Exception as e:
+        print(f"=" * 70)
+        print(f"❌ ❌ ❌ НЕПРЕДВИДЕННАЯ ОШИБКА!")
+        print(f"Тип ошибки: {type(e).__name__}")
+        print(f"Сообщение: {e}")
+        print(f"=" * 70)
+        logger.error(f"❌ Unexpected error in show_cabinet: {e}", exc_info=True)
+
+        try:
+            await callback.message.edit_text(
+                "❌ Произошла ошибка при загрузке личного кабинета.\n"
+                "Пожалуйста, попробуйте позже.",
+                reply_markup=get_main_keyboard()
+            )
+        except:
+            pass
+
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
 
         print("✅ Кабинет успешно отображен")
         print("=" * 70 + "\n")

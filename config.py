@@ -7,10 +7,7 @@ class Config:
     # ============================================
     BOT_TOKEN = os.getenv('BOT_TOKEN', '7695101627:AAGmJn1G5GIoqL2ILiGgAtzePOZEsHQjVJ8')
     ADMIN_IDS = [866916345]
-
-    # ✅ КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: Единая база данных
-    DB_NAME = "education_center.db"  # Было: "students.db"
-
+    DB_NAME = "education_center.db"
     CHANNEL_ID = -1002906910895
 
     # ============================================

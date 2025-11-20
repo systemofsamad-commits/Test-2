@@ -20,7 +20,7 @@ class TeacherRepository:
         """Создать преподавателя"""
         try:
             query = """
-                    INSERT INTO teachers (name, phone, email, specialization, experience)
+                    INSERT INTO teachers (full_name, phone, email, specialization, experience_years)
                     VALUES (?, ?, ?, ?, ?)
                     """
             teacher_id = self.db.execute_insert(query, (name, phone, email, specialization, experience))
